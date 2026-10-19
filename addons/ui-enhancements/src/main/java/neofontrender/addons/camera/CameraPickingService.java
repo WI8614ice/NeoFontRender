@@ -18,7 +18,11 @@ import neofontrender.addons.api.camera.CameraHit;
 import neofontrender.addons.api.camera.CameraPickingPurpose;
 import neofontrender.addons.api.camera.CameraPickingRequest;
 import neofontrender.addons.api.camera.CameraRay;
+import neofontrender.addons.api.camera.CameraEntityPickGeometry;
 
+import java.util.ArrayList;
+import java.util.IdentityHashMap;
+import java.util.Map;
 import java.util.List;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -82,11 +86,10 @@ public final class CameraPickingService {
         Vec3d from = vec(originValue);
         Vec3d direction = vec(directionValue);
         CameraHit provided = CameraApi.pick(new CameraPickingRequest(originValue, directionValue,
-                plan.distance, CameraPickingPurpose.PLAYER_INTERACTION, false, true));
-        boolean shoulder = CameraRuntime.isShoulderActive();
-        RayTraceResult result = provided != null && provided.nativeResult() != null
-                ? provided.nativeResult() : trace(player, from, direction, plan.distance,
-                        false, shoulder, !shoulder);
+                plan.distance, CameraPickingPurpose.PLAYER_INTERACTION, false, true, partialTicks));
+        // CameraApi.pick already delegates to the real backend. A miss is final; tracing
+        // again would sample geometry providers twice and could turn one pick into two states.
+        RayTraceResult result = provided == null ? null : provided.nativeResult();
         minecraft.objectMouseOver = result;
         minecraft.pointedEntity = result != null && result.typeOfHit == RayTraceResult.Type.ENTITY
                 ? result.entityHit : null;
@@ -100,10 +103,10 @@ public final class CameraPickingService {
             RayPlan plan = cursorInteractionRay(frame, reach);
             if (plan == null) return null;
             return trace(entity, vec(plan.origin), vec(plan.direction), plan.distance,
-                    useLiquids, false, true);
+                    useLiquids, false, true, partialTicks);
         }
         return trace(entity, vec(frame.position()), vec(frame.viewBasis().forward()), reach,
-                useLiquids, false, true);
+                useLiquids, false, true, partialTicks);
     }
 
     /** Whether a vanilla block-only ray call must be replaced rather than allowed to fall through. */
@@ -157,15 +160,21 @@ public final class CameraPickingService {
             RayPlan plan = cursorInteractionRay(frame, reach);
             if (plan == null) return null;
             return trace(entity, vec(plan.origin), vec(plan.direction), plan.distance,
-                    useLiquids, false, true);
+                    useLiquids, false, true, partialTicks);
         }
         return trace(entity, vec(frame.bodyPosition()), vec(frame.bodyBasis().forward()), reach,
-                useLiquids, false, true);
+                useLiquids, false, true, partialTicks);
     }
 
     /** Executes an explicit API ray without substituting the active camera frame. */
     public static RayTraceResult traceRay(Entity entity, CameraVector origin, CameraVector direction,
                                           double reach, boolean useLiquids, boolean includeEntities) {
+        return traceRay(entity, origin, direction, reach, useLiquids, includeEntities, 0.0F);
+    }
+
+    public static RayTraceResult traceRay(Entity entity, CameraVector origin, CameraVector direction,
+                                          double reach, boolean useLiquids, boolean includeEntities,
+                                          float partialTicks) {
         if (entity == null || entity.world == null || origin == null || direction == null) return null;
         Vec3d from = vec(origin);
         Vec3d look = vec(direction.normalize());
@@ -173,19 +182,19 @@ public final class CameraPickingService {
         RayTraceResult block = entity.world.rayTraceBlocks(from, to, useLiquids, false, true);
         if (!includeEntities) return block;
         double maximum = blockingDistance(block, from, reach);
-        RayTraceResult hit = traceEntity(entity, from, look, maximum);
+        RayTraceResult hit = traceEntity(entity, from, look, maximum, partialTicks);
         return hit == null ? block : hit;
     }
 
     private static RayTraceResult trace(Entity entity, Vec3d from, Vec3d direction,
                                         double reach, boolean stopOnLiquid,
                                         boolean ignoreBlocksWithoutBounds,
-                                        boolean returnLastMiss) {
+                                        boolean returnLastMiss, float partialTicks) {
         Vec3d to = from.add(direction.scale(reach));
         RayTraceResult block = entity.world.rayTraceBlocks(from, to, stopOnLiquid,
                 ignoreBlocksWithoutBounds, returnLastMiss);
         double maximum = blockingDistance(block, from, reach);
-        RayTraceResult hit = traceEntity(entity, from, direction, maximum);
+        RayTraceResult hit = traceEntity(entity, from, direction, maximum, partialTicks);
         return hit == null ? block : hit;
     }
 
@@ -255,19 +264,16 @@ public final class CameraPickingService {
         CameraHit provided = includeEntities && interaction != null
                 ? CameraApi.pick(new CameraPickingRequest(
                 interaction.origin, interaction.direction, interaction.distance,
-                CameraPickingPurpose.PLAYER_INTERACTION, stopOnLiquid, true)) : null;
-        RayTraceResult targetHit = provided != null && provided.nativeResult() != null
-                ? provided.nativeResult()
-                : interaction == null
+                CameraPickingPurpose.PLAYER_INTERACTION, stopOnLiquid, true, frame.partialTicks())) : null;
+        RayTraceResult targetHit = interaction == null
                 ? null
                 : includeEntities
-                ? trace(entity, from, vec(interaction.direction), interaction.distance, stopOnLiquid,
-                        ignoreBlocksWithoutBounds, returnLastMiss)
+                ? provided == null ? null : provided.nativeResult()
                 : entity.world.rayTraceBlocks(from,
                         from.add(vec(interaction.direction).scale(interaction.distance)), stopOnLiquid,
                         ignoreBlocksWithoutBounds, returnLastMiss);
         CameraVector target = cursorVisualAimTarget(entity, camera, stopOnLiquid,
-                includeEntities, CursorLookConfig.aimDistance);
+                includeEntities, CursorLookConfig.aimDistance, frame.partialTicks());
         return new CursorPick(camera, targetHit, cursorAimDirection(frame, camera, target));
     }
 
@@ -275,16 +281,13 @@ public final class CameraPickingService {
     private static CameraVector cursorVisualAimTarget(Entity entity, RayPlan camera,
                                                       boolean stopOnLiquid,
                                                       boolean includeEntities,
-                                                      double aimDistance) {
+                                                      double aimDistance, float partialTicks) {
         if (entity == null || entity.world == null || camera == null) return null;
         double distance = cursorAimDistance(camera, aimDistance);
         CameraHit provided = CameraApi.pick(new CameraPickingRequest(
                 camera.origin, camera.direction, distance,
-                CameraPickingPurpose.CROSSHAIR, stopOnLiquid, includeEntities));
-        RayTraceResult hit = provided != null && provided.nativeResult() != null
-                ? provided.nativeResult()
-                : trace(entity, vec(camera.origin), vec(camera.direction), distance,
-                        stopOnLiquid, false, true);
+                CameraPickingPurpose.CROSSHAIR, stopOnLiquid, includeEntities, partialTicks));
+        RayTraceResult hit = provided == null ? null : provided.nativeResult();
         CameraVector visualTarget = hit != null && hit.typeOfHit != RayTraceResult.Type.MISS
                 && hit.hitVec != null
                 ? new CameraVector(hit.hitVec.x, hit.hitVec.y, hit.hitVec.z) : null;
@@ -366,7 +369,7 @@ public final class CameraPickingService {
     }
 
     private static RayTraceResult traceEntity(Entity cameraEntity, Vec3d from, Vec3d direction,
-                                              double maximum) {
+                                              double maximum, float partialTicks) {
         Vec3d to = from.add(direction.scale(maximum));
         Vec3d searchTo = from.add(direction.scale(Math.min(64.0D, maximum)));
         AxisAlignedBB search = new AxisAlignedBB(
@@ -374,14 +377,38 @@ public final class CameraPickingService {
                 Math.min(from.z, searchTo.z), Math.max(from.x, searchTo.x),
                 Math.max(from.y, searchTo.y), Math.max(from.z, searchTo.z))
                 .grow(1.0D);
-        List<Entity> candidates = cameraEntity.world.getEntitiesInAABBexcluding(cameraEntity, search,
+        List<CameraEntityPickGeometry> snapshot = CameraApi.sampleEntityPickGeometry(
+                cameraEntity.world, cameraEntity, partialTicks);
+        Map<Entity, CameraEntityPickGeometry> overrides = new IdentityHashMap<>();
+        List<CameraEntityPickGeometry> candidates = new ArrayList<>();
+        for (CameraEntityPickGeometry geometry : snapshot) {
+            Entity candidate = geometry.entity();
+            if (candidate == cameraEntity || candidate.world != cameraEntity.world || candidate.isDead
+                    || cameraEntity.world.getEntityByID(candidate.getEntityId()) != candidate) continue;
+            if (overrides.putIfAbsent(candidate, geometry) != null) continue;
+            if (!geometry.isSuppressed() && EntitySelectors.NOT_SPECTATING.apply(candidate)
+                    && candidate.canBeCollidedWith()) {
+                AxisAlignedBB pickBounds = geometry.bounds().grow(candidate.getCollisionBorderSize());
+                if (pickBounds.intersects(search)) {
+                    candidates.add(new CameraEntityPickGeometry(candidate, pickBounds));
+                }
+            }
+        }
+        List<Entity> nativeCandidates = cameraEntity.world.getEntitiesInAABBexcluding(cameraEntity, search,
                 entity -> entity != null && EntitySelectors.NOT_SPECTATING.apply(entity)
                         && entity.canBeCollidedWith());
+        Map<Entity, Boolean> seen = new IdentityHashMap<>();
+        for (Entity candidate : nativeCandidates) {
+            if (overrides.containsKey(candidate) || seen.put(candidate, Boolean.TRUE) != null) continue;
+            candidates.add(new CameraEntityPickGeometry(candidate,
+                    candidate.getEntityBoundingBox().grow(candidate.getCollisionBorderSize())));
+        }
         Entity nearest = null;
         Vec3d nearestHit = null;
         double nearestDistance = maximum;
-        for (Entity candidate : candidates) {
-            AxisAlignedBB bounds = candidate.getEntityBoundingBox().grow(candidate.getCollisionBorderSize());
+        for (CameraEntityPickGeometry geometry : candidates) {
+            Entity candidate = geometry.entity();
+            AxisAlignedBB bounds = geometry.bounds();
             RayTraceResult hit = bounds.calculateIntercept(from, to);
             if (bounds.contains(from)) {
                 if (nearestDistance >= 0.0D) {

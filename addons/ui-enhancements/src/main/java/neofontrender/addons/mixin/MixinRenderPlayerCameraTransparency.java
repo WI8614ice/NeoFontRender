@@ -1,5 +1,7 @@
 package neofontrender.addons.mixin;
 
+import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.entity.AbstractClientPlayer;
 import net.minecraft.client.renderer.GlStateManager;
@@ -11,22 +13,11 @@ import org.lwjgl.BufferUtils;
 import java.nio.FloatBuffer;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
-import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.Redirect;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-/** Scoped local-player alpha for Shoulder presentation; never leaks GL state. */
+/** Local-player proximity alpha is confined to one world model render, including failures. */
 @Mixin(RenderPlayer.class)
 public abstract class MixinRenderPlayerCameraTransparency {
-    private boolean nfrUi$alphaApplied;
-    private boolean nfrUi$blendEnabled;
-    private boolean nfrUi$alphaEnabled;
-    private boolean nfrUi$depthMask;
-    private int nfrUi$alphaFunc;
-    private float nfrUi$alphaRef;
-    private int nfrUi$blendSrcRgb, nfrUi$blendDstRgb, nfrUi$blendSrcAlpha, nfrUi$blendDstAlpha;
-    private final FloatBuffer nfrUi$color = BufferUtils.createFloatBuffer(4);
-
     /** Keep the player model in the world for player-anchored custom third-person rigs. */
     @Redirect(method = "doRender(Lnet/minecraft/client/entity/AbstractClientPlayer;DDDFF)V",
             at = @At(value = "INVOKE", target =
@@ -36,53 +27,62 @@ public abstract class MixinRenderPlayerCameraTransparency {
                 && !CameraRuntime.isPlayerAnchoredCameraActive();
     }
 
-    @Inject(method = "doRender(Lnet/minecraft/client/entity/AbstractClientPlayer;DDDFF)V",
-            at = @At("HEAD"), cancellable = true, require = 1)
-    private void nfrUi$beginPlayerAlpha(AbstractClientPlayer player, double x, double y,
-                                         double z, float yaw, float partialTicks, CallbackInfo ci) {
+    @WrapMethod(method = {
+            "doRender(Lnet/minecraft/client/entity/AbstractClientPlayer;DDDFF)V",
+            "func_76986_a(Lnet/minecraft/client/entity/AbstractClientPlayer;DDDFF)V"
+    }, remap = false, require = 1, expect = 1, allow = 1)
+    private void nfrUi$renderPlayerAlpha(AbstractClientPlayer player, double x, double y,
+                                        double z, float yaw, float partialTicks,
+                                        Operation<Void> original) {
         Minecraft minecraft = Minecraft.getMinecraft();
-        if (player == minecraft.player && CameraRuntime.shoulderSkipPlayerRendering()) {
-            ci.cancel();
+        if (player == minecraft.player && CameraRuntime.isPlayerWorldRender(partialTicks)
+                && CameraRuntime.shoulderSkipPlayerRendering()) return;
+        float alpha = player == minecraft.player ? CameraRuntime.playerProximityAlpha(partialTicks) : 1.0F;
+        if (alpha == 0.0F) return; // No invisible depth-only model at the fully transparent endpoint.
+        boolean outerActive = CameraRuntime.isShoulderTransparencyRenderActive();
+        if (alpha == 1.0F && !outerActive) {
+            original.call(player, x, y, z, yaw, partialTicks);
             return;
         }
-        if (player == minecraft.player && CameraRuntime.shoulderPlayerTransparency()) {
-            nfrUi$alphaApplied = true;
-            nfrUi$blendEnabled = GL11.glIsEnabled(GL11.GL_BLEND);
-            nfrUi$alphaEnabled = GL11.glIsEnabled(GL11.GL_ALPHA_TEST);
-            nfrUi$depthMask = GL11.glGetBoolean(GL11.GL_DEPTH_WRITEMASK);
-            nfrUi$alphaFunc = GL11.glGetInteger(GL11.GL_ALPHA_TEST_FUNC);
-            nfrUi$alphaRef = GL11.glGetFloat(GL11.GL_ALPHA_TEST_REF);
-            nfrUi$blendSrcRgb = GL11.glGetInteger(GL14.GL_BLEND_SRC_RGB);
-            nfrUi$blendDstRgb = GL11.glGetInteger(GL14.GL_BLEND_DST_RGB);
-            nfrUi$blendSrcAlpha = GL11.glGetInteger(GL14.GL_BLEND_SRC_ALPHA);
-            nfrUi$blendDstAlpha = GL11.glGetInteger(GL14.GL_BLEND_DST_ALPHA);
-            nfrUi$color.clear();
-            GL11.glGetFloat(GL11.GL_CURRENT_COLOR, nfrUi$color);
-            CameraRuntime.beginShoulderTransparencyRender();
-            GlStateManager.enableBlend();
-            GlStateManager.enableAlpha();
-            GlStateManager.depthMask(true);
-            GlStateManager.tryBlendFuncSeparate(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA,
-                    GL11.GL_ONE, GL11.GL_ZERO);
-            GlStateManager.alphaFunc(GL11.GL_GREATER, 0.003921569F);
-            GlStateManager.color(1.0F, 1.0F, 1.0F, CameraRuntime.shoulderPlayerAlpha());
+        boolean blendEnabled = GL11.glIsEnabled(GL11.GL_BLEND);
+        boolean alphaEnabled = GL11.glIsEnabled(GL11.GL_ALPHA_TEST);
+        boolean depthMask = GL11.glGetBoolean(GL11.GL_DEPTH_WRITEMASK);
+        int alphaFunc = GL11.glGetInteger(GL11.GL_ALPHA_TEST_FUNC);
+        float alphaRef = GL11.glGetFloat(GL11.GL_ALPHA_TEST_REF);
+        int srcRgb = GL11.glGetInteger(GL14.GL_BLEND_SRC_RGB);
+        int dstRgb = GL11.glGetInteger(GL14.GL_BLEND_DST_RGB);
+        int srcAlpha = GL11.glGetInteger(GL14.GL_BLEND_SRC_ALPHA);
+        int dstAlpha = GL11.glGetInteger(GL14.GL_BLEND_DST_ALPHA);
+        FloatBuffer color = BufferUtils.createFloatBuffer(4);
+        GL11.glGetFloat(GL11.GL_CURRENT_COLOR, color);
+        float previousAlpha = CameraRuntime.exchangePlayerTransparencyRenderAlpha(1.0F);
+        try {
+            if (alpha < 1.0F) {
+                GlStateManager.enableBlend();
+                GlStateManager.enableAlpha();
+                GlStateManager.depthMask(true);
+                GlStateManager.tryBlendFuncSeparate(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA,
+                        GL11.GL_ONE, GL11.GL_ZERO);
+                GlStateManager.alphaFunc(GL11.GL_GREATER, 1.0F / 255.0F);
+                GlStateManager.color(1.0F, 1.0F, 1.0F, alpha);
+                CameraRuntime.exchangePlayerTransparencyRenderAlpha(alpha);
+            } else {
+                // A remote player nested within the local draw must not inherit its opacity.
+                GlStateManager.color(color.get(0), color.get(1), color.get(2), 1.0F);
+            }
+            original.call(player, x, y, z, yaw, partialTicks);
+        } finally {
+            CameraRuntime.exchangePlayerTransparencyRenderAlpha(1.0F);
+            try {
+                GlStateManager.color(color.get(0), color.get(1), color.get(2), color.get(3));
+                GlStateManager.alphaFunc(alphaFunc, alphaRef);
+                GlStateManager.tryBlendFuncSeparate(srcRgb, dstRgb, srcAlpha, dstAlpha);
+                GlStateManager.depthMask(depthMask);
+                if (blendEnabled) GlStateManager.enableBlend(); else GlStateManager.disableBlend();
+                if (alphaEnabled) GlStateManager.enableAlpha(); else GlStateManager.disableAlpha();
+            } finally {
+                CameraRuntime.exchangePlayerTransparencyRenderAlpha(previousAlpha);
+            }
         }
-    }
-
-    @Inject(method = "doRender(Lnet/minecraft/client/entity/AbstractClientPlayer;DDDFF)V",
-            at = @At("RETURN"), require = 1)
-    private void nfrUi$endPlayerAlpha(AbstractClientPlayer player, double x, double y,
-                                       double z, float yaw, float partialTicks, CallbackInfo ci) {
-        if (!nfrUi$alphaApplied) return;
-        nfrUi$alphaApplied = false;
-        CameraRuntime.endShoulderTransparencyRender();
-        GlStateManager.color(nfrUi$color.get(0), nfrUi$color.get(1),
-                nfrUi$color.get(2), nfrUi$color.get(3));
-        GlStateManager.alphaFunc(nfrUi$alphaFunc, nfrUi$alphaRef);
-        GlStateManager.tryBlendFuncSeparate(nfrUi$blendSrcRgb, nfrUi$blendDstRgb,
-                nfrUi$blendSrcAlpha, nfrUi$blendDstAlpha);
-        GlStateManager.depthMask(nfrUi$depthMask);
-        if (nfrUi$blendEnabled) GlStateManager.enableBlend(); else GlStateManager.disableBlend();
-        if (nfrUi$alphaEnabled) GlStateManager.enableAlpha(); else GlStateManager.disableAlpha();
     }
 }

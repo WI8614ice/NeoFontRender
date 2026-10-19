@@ -29,6 +29,7 @@ public final class CameraModule implements UiEnhancementModule {
     private net.minecraft.util.ResourceLocation interactiveRigId;
     @Override public void preInit() {
         ShoulderCameraConfig.load();
+        PlayerFadeConfig.load();
         FreeLookConfig.load();
         CursorLookConfig.load();
         DroneCameraConfig.load();
@@ -88,6 +89,7 @@ public final class CameraModule implements UiEnhancementModule {
             return;
         }
         if (event.phase != TickEvent.Phase.END) return;
+        PlayerFadeConfig.poll();
         net.minecraft.client.entity.EntityPlayerSP player =
                 net.minecraft.client.Minecraft.getMinecraft().player;
         if (player == null || !player.isEntityAlive()) {
@@ -177,7 +179,11 @@ public final class CameraModule implements UiEnhancementModule {
     @SubscribeEvent
     public void worldUnload(WorldEvent.Unload event) {
         if (event.getWorld() != null && event.getWorld().isRemote) {
-            closeInteractiveSession();
+            try {
+                closeInteractiveSession();
+            } finally {
+                CameraApi.clearEyeAnchorSampleCache();
+            }
             commandEdges.clear();
             CameraRuntime.releaseApiViewProxy();
             VanillaInputBridge.reset();
@@ -187,7 +193,11 @@ public final class CameraModule implements UiEnhancementModule {
 
     @SubscribeEvent
     public void disconnected(FMLNetworkEvent.ClientDisconnectionFromServerEvent event) {
-        closeInteractiveSession();
+        try {
+            closeInteractiveSession();
+        } finally {
+            CameraApi.clearEyeAnchorSampleCache();
+        }
         commandEdges.clear();
         CameraRuntime.releaseApiViewProxy();
         VanillaInputBridge.reset();

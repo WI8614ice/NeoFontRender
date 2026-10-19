@@ -2,6 +2,13 @@ package neofontrender.addons.camera;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.entity.EntityPlayerSP;
+import net.minecraft.client.renderer.ActiveRenderInfo;
+import net.minecraft.client.renderer.GlStateManager;
+import java.nio.FloatBuffer;
+import javax.vecmath.Matrix4f;
+import javax.vecmath.Vector4f;
+import org.lwjgl.BufferUtils;
+import org.lwjgl.opengl.GL11;
 import net.minecraft.entity.Entity;
 import net.minecraft.util.math.AxisAlignedBB;
 import net.minecraft.util.ResourceLocation;
@@ -44,6 +51,8 @@ public final class CameraRuntime {
     private static long sampleId;
     private static float samplePartialTicks = -1.0F;
     private static boolean sampleValid;
+    private static boolean sampledEyeAnchorActive;
+    private static NativeCameraRenderSample nativeCameraRenderSample;
     private static CameraFrame lastFrame = new CameraFrame(0L, 0.0F,
             CameraAttitude.IDENTITY, CameraAttitude.IDENTITY,
             new CameraVector(0.0D, 0.0D, 0.0D), new CameraVector(0.0D, 0.0D, 0.0D), true);
@@ -74,7 +83,7 @@ public final class CameraRuntime {
     private static float shoulderSecondaryCrosshairX;
     private static float shoulderSecondaryCrosshairY;
     private static boolean shoulderSecondaryCrosshairProjected;
-    private static boolean shoulderTransparencyRenderScope;
+    private static float playerTransparencyRenderAlpha = 1.0F;
     private static CameraVector previousKinematicPosition;
     private static CameraAttitude previousKinematicAttitude;
     private static long previousKinematicNanos;
@@ -114,7 +123,173 @@ public final class CameraRuntime {
     public static synchronized boolean suppressesVanillaThirdPersonDisplacement() {
         return usesDetachedThirdPersonPresentation()
                 || ((isShoulderActive() || isLookCameraActive())
+                && MC.gameSettings.thirdPersonView > 0)
+                || (nativeCameraRenderSample != null
+                && nativeCameraRenderSample.ownsNativeOrigin()
                 && MC.gameSettings.thirdPersonView > 0);
+    }
+
+    /**
+     * Samples the exact CameraApi frame before orientCamera chooses its native third-person
+     * displacement. The later CameraSetup event and ActiveRenderInfo consumer reuse this sample.
+     */
+    public static synchronized void beginNativeCameraRenderSample(float partialTicks) {
+        float partial = clampPartial(partialTicks);
+        Entity renderEntity = MC.getRenderViewEntity();
+        CameraFrame frame = CameraApi.getFrame(partial);
+        boolean overrideActive = CameraApi.isRenderOverrideActive();
+        boolean builtInRig = CameraApi.isDroneActive() || isLookCameraActive() || isShoulderActive();
+        boolean nativeOrigin = CameraPresentationPolicy.usesNativeCameraAnchor(
+                overrideActive, !frame.isVanillaPassThrough(), builtInRig, usesDirectViewProxy());
+        beginNativeCameraRenderSample(renderEntity, partial, frame, overrideActive,
+                nativeOrigin, MC.gameSettings.thirdPersonView);
+    }
+
+    static synchronized void beginNativeCameraRenderSample(Entity renderEntity, float partialTicks,
+                                                            CameraFrame frame, boolean overrideActive,
+                                                            boolean nativeOrigin, int perspective) {
+        nativeCameraRenderSample = new NativeCameraRenderSample(renderEntity, clampPartial(partialTicks),
+                frame, overrideActive, nativeOrigin, perspective);
+    }
+
+    /**
+     * A pass starts with updateFogColor before orientCamera has captured its GL/eye sample.
+     * Leave that pre-camera consumer on its native path rather than using the previous pass.
+     * Clear at both boundaries so equal partial ticks and render-entity changes cannot reuse it.
+     */
+    public static synchronized void clearNativeCameraRenderSample() {
+        nativeCameraRenderSample = null;
+    }
+
+    /** Captures orientCamera's patched slot 3 and both native interpolation baselines. */
+    public static synchronized void captureNativeCameraAnchor(Entity renderEntity,
+                                                              float partialTicks,
+                                                              float effectiveEyeHeight) {
+        NativeCameraRenderSample sample = nativeCameraRenderSample;
+        if (sample == null || !sample.ownsNativeOrigin()) return;
+        if (!sample.matches(renderEntity, partialTicks)) {
+            throw new IllegalStateException("Native camera anchor capture no longer matches the "
+                    + "orientCamera render entity/partial sample: expected entity="
+                    + sample.renderEntity + ", partial=" + sample.partialTicks
+                    + "; actual entity=" + renderEntity + ", partial=" + partialTicks);
+        }
+        sample.capture(renderEntity, effectiveEyeHeight);
+    }
+
+    static synchronized NativeCameraRenderSample nativeCameraRenderSample(Entity renderEntity,
+                                                                          double partialTicks) {
+        NativeCameraRenderSample sample = nativeCameraRenderSample;
+        if (sample == null) return null;
+        if (!sample.matches(renderEntity, (float) partialTicks)) {
+            if (sample.ownsNativeOrigin()) {
+                throw new IllegalStateException("Native camera consumer does not match the "
+                        + "captured orientCamera render entity/partial sample: expected entity="
+                        + sample.renderEntity + ", partial=" + sample.partialTicks
+                        + "; actual entity=" + renderEntity + ", partial=" + partialTicks);
+            }
+            return null;
+        }
+        return sample;
+    }
+
+    /**
+     * ActiveRenderInfo starts from prevPos while world rendering uses lastTickPos. Apply only
+     * their sampled base difference so the existing modelview-derived near-plane bias survives.
+     */
+    public static synchronized Vec3d alignActiveRenderInfoPosition(Entity renderEntity,
+                                                                   double partialTicks,
+                                                                   Vec3d nativePosition) {
+        NativeCameraRenderSample sample = nativeCameraRenderSample(renderEntity, partialTicks);
+        if (sample == null || !sample.ownsNativeOrigin() || !sample.cameraSetupApplied) return null;
+        CameraVector adjusted = CameraPresentationPolicy.adjustActiveRenderInfoOrigin(
+                new CameraVector(nativePosition.x, nativePosition.y, nativePosition.z),
+                sample.previousBase, sample.renderBase);
+        return new Vec3d(adjusted.x, adjusted.y, adjusted.z);
+    }
+
+    /**
+     * ActiveRenderInfo.position is the unprojected near-plane point, not the camera center.
+     * Capture the inverse modelview origin at the same boundary, before entity transforms.
+     */
+    public static synchronized void captureFinalCameraOrigin(Entity renderEntity) {
+        NativeCameraRenderSample sample = nativeCameraRenderSample;
+        if (sample == null || sample.renderEntity != renderEntity) return;
+        FloatBuffer values = BufferUtils.createFloatBuffer(16);
+        GlStateManager.getFloat(GL11.GL_MODELVIEW_MATRIX, values);
+        Matrix4f inverse = new Matrix4f();
+        for (int row = 0; row < 4; row++) {
+            for (int column = 0; column < 4; column++)
+                inverse.setElement(row, column, values.get(column * 4 + row));
+        }
+        inverse.invert();
+        Vector4f origin = new Vector4f(0.0F, 0.0F, 0.0F, 1.0F);
+        inverse.transform(origin);
+        if (!Float.isFinite(origin.x) || !Float.isFinite(origin.y)
+                || !Float.isFinite(origin.z) || !Float.isFinite(origin.w) || origin.w == 0.0F)
+            throw new IllegalStateException("Non-finite modelview camera origin in world render");
+        Vec3d base = ActiveRenderInfo.projectViewFromEntity(renderEntity, sample.partialTicks)
+                .subtract(ActiveRenderInfo.getCameraPosition());
+        sample.finalCameraOrigin = new Vec3d(base.x + origin.x / origin.w, base.y + origin.y / origin.w,
+                base.z + origin.z / origin.w);
+    }
+
+    static final class NativeCameraRenderSample {
+        final Entity renderEntity;
+        final float partialTicks;
+        final CameraFrame frame;
+        final boolean renderOverrideActive;
+        final int perspective;
+        private final boolean ownsNativeOrigin;
+        Vec3d finalCameraOrigin;
+        CameraVector previousBase;
+        CameraVector renderBase;
+        float effectiveEyeHeight;
+        boolean anchorCaptured;
+        boolean cameraSetupApplied;
+
+        private NativeCameraRenderSample(Entity renderEntity, float partialTicks,
+                                         CameraFrame frame, boolean renderOverrideActive,
+                                         boolean ownsNativeOrigin, int perspective) {
+            this.renderEntity = renderEntity;
+            this.partialTicks = partialTicks;
+            this.frame = frame;
+            this.renderOverrideActive = renderOverrideActive;
+            this.ownsNativeOrigin = ownsNativeOrigin;
+            this.perspective = perspective;
+        }
+
+        boolean ownsNativeOrigin() { return ownsNativeOrigin; }
+
+        boolean matches(Entity entity, float partial) {
+            return renderEntity == entity && Float.isFinite(partial)
+                    && Math.abs(partialTicks - clampPartial(partial)) < 1.0E-5F;
+        }
+
+        CameraVector originTranslation() {
+            if (!anchorCaptured) {
+                throw new IllegalStateException("Authoritative CameraSetup reached before the "
+                        + "patched orientCamera eye-height anchor was captured");
+            }
+            return CameraPresentationPolicy.nativeCameraOriginTranslation(
+                    renderBase, effectiveEyeHeight, frame.position());
+        }
+
+        void capture(Entity entity, float eyeHeight) {
+            if (!Float.isFinite(eyeHeight)) {
+                throw new IllegalStateException("orientCamera effective eye height is not finite: "
+                        + eyeHeight);
+            }
+            double partial = partialTicks;
+            CameraVector current = new CameraVector(entity.posX, entity.posY, entity.posZ);
+            previousBase = CameraPresentationPolicy.interpolateNativePosition(
+                    new CameraVector(entity.prevPosX, entity.prevPosY, entity.prevPosZ),
+                    current, partial);
+            renderBase = CameraPresentationPolicy.interpolateNativePosition(
+                    new CameraVector(entity.lastTickPosX, entity.lastTickPosY, entity.lastTickPosZ),
+                    current, partial);
+            effectiveEyeHeight = eyeHeight;
+            anchorCaptured = true;
+        }
     }
 
     /** RenderPlayer normally suppresses the local user when a detached proxy is the view entity. */
@@ -159,12 +334,15 @@ public final class CameraRuntime {
     public static synchronized void beginSample(float partialTicks) {
         samplePartialTicks = clampPartial(partialTicks);
         sampleValid = false;
+        sampledEyeAnchorActive = false;
         sampleId++;
     }
 
     public static synchronized CameraFrame frame(float partialTicks) {
         float value = clampPartial(partialTicks);
         if (sampleValid && Math.abs(samplePartialTicks - value) < 1.0E-5F) return lastFrame;
+        sampleValid = false;
+        sampledEyeAnchorActive = false;
         if (!sampleValid && samplePartialTicks < 0.0F) {
             samplePartialTicks = value;
             sampleId++;
@@ -179,14 +357,17 @@ public final class CameraRuntime {
             view = view.multiply(CameraAttitude.axisAngle(
                     new CameraVector(0.0D, 1.0D, 0.0D), Math.PI));
         }
-        CameraVector bodyPosition = interpolatedEye(player, value);
+        CameraEyeAnchorSampler.Sample eyeSample = CameraEyeAnchorSampler.sample(
+                player, sampleId, value);
+        CameraVector bodyPosition = eyeSample.bodyPosition();
+        boolean eyeAnchorActive = eyeSample.hasAcceptedAnchor();
         CameraVector position;
         CameraVector targetPosition;
         if (isDroneActive()) {
             position = dronePosition == null ? bodyPosition : dronePosition;
             targetPosition = position;
         } else if (isCursorLookActive() && CursorLookConfig.useShoulderOffset) {
-            ShoulderCameraRig.Sample sample = ShoulderCameraRig.resolve(
+            ShoulderCameraRig.Sample sample = resolveShoulderRig(
                     player, view, bodyPosition, value);
             position = sample.position;
             targetPosition = sample.target;
@@ -202,7 +383,7 @@ public final class CameraRuntime {
             updateBuiltInPresentation();
             ShoulderCameraRig.Sample sample = shoulderFirstPersonOverride
                     ? new ShoulderCameraRig.Sample(bodyPosition, bodyPosition)
-                    : ShoulderCameraRig.resolve(player, view, bodyPosition, value);
+                    : resolveShoulderRig(player, view, bodyPosition, value);
             position = sample.position;
             targetPosition = sample.target;
             shoulderPosition = position;
@@ -230,7 +411,8 @@ public final class CameraRuntime {
         lastFrame = new CameraFrame(sampleId, value, body, view,
                 bodyPosition, position, targetPosition, velocity, kinematics.angular,
                 !isDroneActive() && !isLookCameraActive() && !isShoulderActive()
-                        && !bodySample.flightAuthoritative);
+                        && !bodySample.flightAuthoritative && !eyeAnchorActive);
+        sampledEyeAnchorActive = eyeAnchorActive;
         samplePartialTicks = value;
         sampleValid = true;
         return lastFrame;
@@ -253,10 +435,13 @@ public final class CameraRuntime {
         if (drone) {
             EntityPlayerSP player = MC.player;
             if (player == null) return new RejectedSession();
-            CameraVector position = new CameraVector(player.posX,
-                    player.posY + player.getEyeHeight(), player.posZ);
-            CameraAttitude attitude = CameraAttitude.fromMinecraftDegrees(
-                    player.rotationPitch, player.rotationYaw, 0.0D);
+            float partial = clampPartial(MC.getRenderPartialTicks());
+            CameraVector eye = CameraEyeAnchorSampler.sample(player, sampleId, partial).bodyPosition();
+            CameraAttitude attitude = bodyAttitude(player, partial).attitude;
+            // Start beside the accepted eye using the same view basis and block collision policy
+            // as the live rig. The player's width supplies the offset scale in every gravity frame.
+            CameraVector position = resolveDroneCollision(eye,
+                    eye.add(attitude.forward().scale(player.width)));
             droneMotion = new DroneMotionController(position, attitude);
             dronePosition = position;
             droneAttitude = attitude;
@@ -276,8 +461,7 @@ public final class CameraRuntime {
             cursorLookController = new CursorLookController();
             if (cursorLookRequest) cursorLookController.reset(MC.displayWidth, MC.displayHeight);
             if (cursorLookRequest && CursorLookConfig.useShoulderOffset) {
-                CameraVector anchor = interpolatedEye(player, MC.getRenderPartialTicks());
-                ShoulderCameraRig.reset(player, attitude, anchor);
+                resetShoulderRig(player, attitude, sampleId, MC.getRenderPartialTicks());
             }
             freeLookInput = FreeLookInputGuard.enter(freeLookControlsPlayer,
                     cursorLookRequest ? CURSOR_LOOK_ID : FREE_LOOK_ID);
@@ -288,9 +472,9 @@ public final class CameraRuntime {
             EntityPlayerSP player = MC.player;
             if (player == null) return new RejectedSession();
             CameraAttitude body = bodyAttitude(player, MC.getRenderPartialTicks()).attitude;
-            CameraVector anchor = interpolatedEye(player, MC.getRenderPartialTicks());
-            ShoulderCameraRig.reset(player, body, anchor);
-            shoulderPosition = ShoulderCameraRig.resolve(player, body, anchor,
+            CameraVector anchor = resetShoulderRig(
+                    player, body, sampleId, MC.getRenderPartialTicks());
+            shoulderPosition = resolveShoulderRig(player, body, anchor,
                     MC.getRenderPartialTicks()).position;
             enterBuiltInPresentation();
         }
@@ -347,8 +531,40 @@ public final class CameraRuntime {
         CameraAttitude body = bodyAttitude(player, 1.0F).attitude;
         CameraAttitude view = cursorShoulder && freeLookController != null
                 ? freeLookController.resolve(body) : body;
-        ShoulderCameraRig.tick(player, view, interpolatedEye(player, 1.0F));
+        tickShoulderRig(player, view, sampleId + 1L, 1.0F);
         invalidateSample();
+    }
+
+    /** Shared reset seam for shoulder mode and cursor-look's optional shoulder orbit. */
+    static synchronized CameraVector resetShoulderRig(EntityPlayerSP player,
+                                                       CameraAttitude view,
+                                                       long sampleId,
+                                                       float partialTicks) {
+        CameraVector anchor = sampleRigEye(player, sampleId, partialTicks);
+        ShoulderCameraRig.reset(player, view, anchor);
+        return anchor;
+    }
+
+    /** Tick state is sampled for the render sample created by the following invalidation. */
+    static synchronized CameraVector tickShoulderRig(EntityPlayerSP player,
+                                                      CameraAttitude view,
+                                                      long sampleId,
+                                                      float partialTicks) {
+        CameraVector anchor = sampleRigEye(player, sampleId, partialTicks);
+        ShoulderCameraRig.tick(player, view, anchor);
+        return anchor;
+    }
+
+    private static CameraVector sampleRigEye(EntityPlayerSP player, long sampleId,
+                                             float partialTicks) {
+        return CameraEyeAnchorSampler.sample(player, sampleId, partialTicks).bodyPosition();
+    }
+
+    static synchronized ShoulderCameraRig.Sample resolveShoulderRig(EntityPlayerSP player,
+                                                                     CameraAttitude view,
+                                                                     CameraVector anchor,
+                                                                     float partialTicks) {
+        return ShoulderCameraRig.resolve(player, view, anchor, partialTicks);
     }
 
     static synchronized String activeRigId() {
@@ -573,53 +789,76 @@ public final class CameraRuntime {
     }
 
     public static synchronized boolean shoulderPlayerTransparency() {
-        if (!isShoulderActive() || shoulderFirstPersonOverride
-                || !ShoulderCameraConfig.playerTransparency || MC.player == null) {
-            return false;
-        }
-        CameraFrame sample = frame(MC.getRenderPartialTicks());
-        CameraVector local = sample.viewAttitude().conjugate().rotate(
-                sample.position().subtract(sample.bodyPosition()));
-        double halfWidth = MC.player.width * 0.5D;
-        double eye = MC.player.getEyeHeight();
-        return Math.abs(local.x) < halfWidth
-                && local.y < MC.player.height - eye && local.y > -eye;
+        return playerProximityAlpha(MC.getRenderPartialTicks()) < 1.0F;
     }
 
-    public static synchronized void beginShoulderTransparencyRender() {
-        shoulderTransparencyRenderScope = true;
-    }
-
-    public static synchronized void endShoulderTransparencyRender() {
-        shoulderTransparencyRenderScope = false;
+    /** Render scopes restore their previous alpha, including nested local/remote renders. */
+    public static synchronized float exchangePlayerTransparencyRenderAlpha(float alpha) {
+        float previous = playerTransparencyRenderAlpha;
+        playerTransparencyRenderAlpha = alpha;
+        return previous;
     }
 
     public static synchronized boolean isShoulderTransparencyRenderActive() {
-        return shoulderTransparencyRenderScope;
+        return playerTransparencyRenderAlpha < 1.0F;
     }
 
     public static synchronized float shoulderPlayerAlpha() {
-        if (MC.player == null) return 1.0F;
-        CameraFrame sample = frame(MC.getRenderPartialTicks());
-        CameraVector local = sample.viewAttitude().conjugate().rotate(
-                sample.position().subtract(sample.bodyPosition()));
-        double halfWidth = Math.max(1.0E-4D, MC.player.width * 0.5D);
-        double eye = MC.player.getEyeHeight();
-        double verticalLimit = local.y >= 0.0D
-                ? Math.max(1.0E-4D, MC.player.height - eye) : Math.max(1.0E-4D, eye);
-        double xAlpha = Math.min(1.0D, Math.abs(local.x) / halfWidth);
-        double yAlpha = Math.min(1.0D, Math.abs(local.y) / verticalLimit);
-        double geometric = Math.max(0.15D, Math.min(1.0D,
-                Math.sqrt(xAlpha * xAlpha + yAlpha * yAlpha)));
+        return playerTransparencyRenderAlpha;
+    }
+
+    /** Current world-render sample only; a GUI player preview must not inherit world hiding. */
+    public static synchronized boolean isPlayerWorldRender(float partialTicks) {
+        Entity renderEntity = MC.getRenderViewEntity();
+        return MC.player != null && MC.world != null && MC.player.world == MC.world
+                && renderEntity != null && renderEntity.world == MC.world
+                && nativeCameraRenderSample != null
+                && nativeCameraRenderSample.matches(renderEntity, partialTicks)
+                && nativeCameraRenderSample.finalCameraOrigin != null;
+    }
+
+    /**
+     * Signed distance to the installed native collision envelope: positive outside, negative
+     * inside. Native perspective zero is also used by API view proxies, so it alone cannot
+     * identify first person. Both fade endpoints are configurable block distances.
+     */
+    public static synchronized float playerProximityAlpha(float partialTicks) {
+        EntityPlayerSP player = MC.player;
+        Entity renderEntity = MC.getRenderViewEntity();
+        if (!ShoulderCameraConfig.playerTransparency || !isPlayerWorldRender(partialTicks)
+                || (MC.gameSettings.thirdPersonView == 0 && !usesDirectViewProxy())
+                || shoulderFirstPersonOverride) return 1.0F;
+        Vec3d camera = nativeCameraRenderSample.finalCameraOrigin;
+        double partial = clampPartial(partialTicks);
+        AxisAlignedBB bounds = player.getEntityBoundingBox().offset(
+                player.lastTickPosX + (player.posX - player.lastTickPosX) * partial - player.posX,
+                player.lastTickPosY + (player.posY - player.lastTickPosY) * partial - player.posY,
+                player.lastTickPosZ + (player.posZ - player.lastTickPosZ) * partial - player.posZ);
+        double dx = Math.max(Math.max(bounds.minX - camera.x, camera.x - bounds.maxX), 0.0D);
+        double dy = Math.max(Math.max(bounds.minY - camera.y, camera.y - bounds.maxY), 0.0D);
+        double dz = Math.max(Math.max(bounds.minZ - camera.z, camera.z - bounds.maxZ), 0.0D);
+        double outside = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        double inside = Math.min(Math.min(camera.x - bounds.minX, bounds.maxX - camera.x),
+                Math.min(Math.min(camera.y - bounds.minY, bounds.maxY - camera.y),
+                        Math.min(camera.z - bounds.minZ, bounds.maxZ - camera.z)));
+        double signedDistance = outside > 0.0D ? outside : -inside;
+        PlayerFadeConfig.Settings settings = PlayerFadeConfig.current();
+        double start = settings.outsideDistance();
+        double depth = settings.insideDepth();
+        double fraction = Math.max(0.0D, Math.min(1.0D, (signedDistance + depth) / (start + depth)));
+        double smooth = fraction * fraction * (3.0D - 2.0D * fraction);
         double configured = ShoulderCameraConfig.playerTransparencyPercent / 100.0D;
-        return (float) Math.max(0.15D, Math.min(1.0D, geometric * configured));
+        // Preserve the old lower-opacity setting as stronger fading, without moving endpoints.
+        double opacity = smooth * (configured + (1.0D - configured) * smooth);
+        return (float) (settings.minimumOpacity() + (1.0D - settings.minimumOpacity()) * opacity);
     }
 
     public static synchronized boolean shoulderSkipPlayerRendering() {
         if (!isShoulderActive() || MC.player == null) return false;
         CameraFrame sample = frame(MC.getRenderPartialTicks());
         double distance = sample.position().subtract(sample.bodyPosition()).length();
-        if (shoulderFirstPersonOverride || (ShoulderCameraConfig.keepCameraOutOfHeadMultiplier > 0.0D
+        if (shoulderFirstPersonOverride || (!ShoulderCameraConfig.playerTransparency
+                && ShoulderCameraConfig.keepCameraOutOfHeadMultiplier > 0.0D
                 && distance < MC.player.width * ShoulderCameraConfig.keepCameraOutOfHeadMultiplier)) {
             return true;
         }
@@ -633,12 +872,20 @@ public final class CameraRuntime {
 
     /** True when the Forge render boundary must use {@link CameraFrame#viewAttitude()}. */
     public static synchronized boolean isViewOverrideActive() {
+        if (sampledEyeAnchorActive) return true;
         if (isDroneActive() || isLookCameraActive()) return true;
         if (isShoulderActive()) return CameraExternalCompat.internalCameraAllowed();
         EntityPlayerSP player = MC.player;
-        return player != null && !lastFrame.isVanillaPassThrough()
-                && FlightApi.queryCameraTracking(player, MC.getRenderPartialTicks()) != null
-                && CameraExternalCompat.internalCameraAllowed();
+        boolean trackingAvailable = player != null
+                && FlightApi.queryCameraTracking(player, MC.getRenderPartialTicks()) != null;
+        return CameraPresentationPolicy.flightCameraViewActive(trackingAvailable,
+                CameraExternalCompat.internalCameraAllowed());
+    }
+
+    /** Vanilla's front-facing branch has a net Y half-turn before CameraSetup is posted. */
+    static synchronized boolean nativeFrontRotationApplied() {
+        return CameraPresentationPolicy.nativeFrontRotationApplied(
+                MC.gameSettings.thirdPersonView);
     }
 
     public static synchronized void setDronePose(CameraVector position, CameraAttitude attitude) {
@@ -840,13 +1087,7 @@ public final class CameraRuntime {
     }
 
     private static CameraVector interpolatedEye(EntityPlayerSP player, float partialTicks) {
-        // Match EntityRenderer.orientCamera exactly so CameraFrame and the rendered world share
-        // one interpolation anchor. lastTickPos can diverge for locally controlled entities.
-        double x = player.prevPosX + (player.posX - player.prevPosX) * partialTicks;
-        double y = player.prevPosY + (player.posY - player.prevPosY) * partialTicks
-                + player.getEyeHeight();
-        double z = player.prevPosZ + (player.posZ - player.prevPosZ) * partialTicks;
-        return new CameraVector(x, y, z);
+        return CameraEyeAnchorSampler.nativeEye(player, partialTicks);
     }
 
     private static double vanillaThirdPersonDistance(float partialTicks) {
@@ -892,6 +1133,7 @@ public final class CameraRuntime {
 
     private static void invalidateSample() {
         sampleValid = false;
+        sampledEyeAnchorActive = false;
         sampleId++;
     }
 

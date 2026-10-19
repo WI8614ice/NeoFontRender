@@ -1,6 +1,7 @@
 package neofontrender.addons.ui;
 
 import neofontrender.api.config.NfrConfigApi;
+import neofontrender.addons.compat.YsmPoseConfig;
 import neofontrender.api.config.NfrConfigFile;
 import neofontrender.api.config.NfrConfigStorage;
 
@@ -16,6 +17,7 @@ public final class UiEnhancementsConfig {
                     .storage(NfrConfigStorage.LAYERED)
                     .fileName("neofontrender-ui-enhancements.toml")
                     .open();
+            YsmPoseConfig.defineDefaults(file);
         }
     }
 

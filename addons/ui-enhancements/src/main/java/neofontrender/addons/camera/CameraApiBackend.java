@@ -56,7 +56,7 @@ final class CameraApiBackend implements CameraApi.Backend {
         if (request == null) return null;
         Entity entity = Minecraft.getMinecraft().player;
         RayTraceResult hit = CameraPickingService.traceRay(entity, request.origin(), request.direction(),
-                request.distance(), request.includeFluids(), request.includeEntities());
+                request.distance(), request.includeFluids(), request.includeEntities(), request.partialTicks());
         if (hit == null || hit.hitVec == null) return null;
         return new CameraHit(hit, new CameraVector(hit.hitVec.x, hit.hitVec.y, hit.hitVec.z));
     }

@@ -3,6 +3,7 @@ package neofontrender.addons.flight.network;
 import io.netty.buffer.ByteBuf;
 import net.minecraft.entity.player.EntityPlayerMP;
 import net.minecraft.network.NetHandlerPlayServer;
+import net.minecraft.network.NetworkManager;
 import net.minecraftforge.fml.common.network.NetworkRegistry;
 import net.minecraftforge.fml.common.FMLCommonHandler;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
@@ -175,19 +176,36 @@ public final class FlightRollNetwork {
             implements IMessageHandler<HandshakeRequest, IMessage> {
         @Override public IMessage onMessage(HandshakeRequest message, MessageContext context) {
             if (!serverInitialized) return null;
-            EntityPlayerMP player = context.getServerHandler().player;
+            NetHandlerPlayServer handler = context.getServerHandler();
+            NetworkManager manager = handler.netManager;
+            EntityPlayerMP player = handler.player;
             player.getServerWorld().addScheduledTask(() -> {
+                // Forge clears player.connection until login completes. The request already
+                // owns this handler; PLAYER routing would read that nullable field again.
+                if (!handshakeConnectionCurrent(handler, manager, player)) return;
                 boolean compatible = message.protocolVersion == PROTOCOL_VERSION;
                 FlightServerPolicy policy = FlightServerApi.policyFor(player);
-                if (compatible) COMPATIBLE_CLIENTS.add(player.getUniqueID());
-                else COMPATIBLE_CLIENTS.remove(player.getUniqueID());
-                CHANNEL.sendTo(new HandshakeResponse(PROTOCOL_VERSION,
+                HandshakeResponse response = new HandshakeResponse(PROTOCOL_VERSION,
                         compatible && policy.isEnabled(),
                         compatible && policy.isSynchronizationEnabled(),
-                        policy.getMaximumRollSpeed()), player);
+                        policy.getMaximumRollSpeed());
+                if (!handshakeConnectionCurrent(handler, manager, player)) return;
+                handler.sendPacket(CHANNEL.getPacketFrom(response));
+                // Only synchronous send acceptance is known here, not remote delivery.
+                if (!handshakeConnectionCurrent(handler, manager, player)) return;
+                if (compatible) COMPATIBLE_CLIENTS.add(player.getUniqueID());
+                else COMPATIBLE_CLIENTS.remove(player.getUniqueID());
             });
             return null;
         }
+    }
+
+    private static boolean handshakeConnectionCurrent(NetHandlerPlayServer handler,
+                                                       NetworkManager manager,
+                                                       EntityPlayerMP player) {
+        return manager.isChannelOpen() && manager.getNetHandler() == handler
+                && handler.netManager == manager && handler.player == player && !player.isDead
+                && (player.connection == null || player.connection == handler);
     }
 
     public static final class RollUpdateHandler implements IMessageHandler<RollUpdate, IMessage> {

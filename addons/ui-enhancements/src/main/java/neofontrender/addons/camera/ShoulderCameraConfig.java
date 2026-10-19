@@ -100,9 +100,9 @@ final class ShoulderCameraConfig {
                 .define("camera.shoulder.visibility.thirdPersonFront", "never", "Third-person-front crosshair visibility rule.")
                 .define("camera.shoulder.visibility.shoulder", "always", "Shoulder crosshair visibility rule.")
                 .define("camera.shoulder.playerTransparency", true,
-                        "Fade the local player when the shoulder camera intersects the body.")
+                        "Fade the local player near its collision bounds in every non-first-person camera.")
                 .define("camera.shoulder.playerTransparencyPercent", 100,
-                        "Scale applied to Shoulder Surfing's geometric local-player alpha.")
+                        "Opacity multiplier within the proximity transition; endpoints remain opaque/transparent.")
                 .define("camera.shoulder.valkyrienShipCollision", false,
                         "Allow Shoulder camera collision with Valkyrien Skies ships.");
         offsetX = file.getDouble("camera.shoulder.offsetX", -0.75D, -32.0D, 32.0D);
