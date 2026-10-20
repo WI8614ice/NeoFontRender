@@ -97,6 +97,88 @@ public final class YsmRenderProbe {
     private static void restore(Sample sample) {
         if (sample == null) CURRENT.remove(); else CURRENT.set(sample);
     }
+    public static boolean observing() { return CURRENT.get() != null; }
+
+    /** This is the field value at this normal process return, not an inferred requested animation. */
+    public static void controllerReturned(Object controller, String animation, String state) {
+        Sample sample = CURRENT.get();
+        if (sample == null) return;
+        String key = controller.getClass().getName() + ":" + System.identityHashCode(controller);
+        JsonObject row = sample.controllers.has(key) ? sample.controllers.getAsJsonObject(key) : null;
+        if (row == null) {
+            if (sample.controllers.size() >= 16) {
+                sample.record.addProperty("omittedControllerReturns", ++sample.omittedControllerReturns);
+                return;
+            }
+            row = new JsonObject();
+            row.addProperty("normalReturns", 0L);
+            sample.controllers.add(key, row);
+        }
+        row.addProperty("normalReturns", row.get("normalReturns").getAsLong() + 1);
+        row.addProperty("animationAtProcessReturn", clip(animation));
+        row.addProperty("stateAtProcessReturn", clip(state));
+        sample.record.addProperty("animationEvidence", "CONTROLLER_FIELDS_AT_NORMAL_PROCESS_RETURN_NOT_GPU_FINAL");
+    }
+
+    public static void withMeshBone(String name, int identity, PlayerBodyRenderScope.RenderCall render) throws Throwable {
+        Sample sample = CURRENT.get();
+        if (sample == null || !sample.geometry) { render.run(); return; }
+        MeshObservation outer = sample.mesh;
+        MeshObservation current = null;
+        String key = name + ":" + identity;
+        if (BONES.contains(name)) {
+            current = sample.meshRows.get(key);
+            if (current == null && sample.meshRows.size() < 32) {
+                current = new MeshObservation(name, identity);
+                sample.meshRows.put(key, current);
+                sample.meshBones.add(key, current.row);
+            }
+            if (current == null) sample.record.addProperty("omittedMeshBoneCalls", ++sample.omittedMeshBoneCalls);
+        }
+        sample.mesh = current;
+        if (current != null) current.increment("boneCalls");
+        boolean completed = false;
+        try { render.run(); completed = true; }
+        finally {
+            if (current != null && completed) current.increment("boneNormalReturns");
+            sample.mesh = outer;
+        }
+    }
+
+    public static void meshInvocation(String phase, PlayerBodyRenderScope.RenderCall render) throws Throwable {
+        Sample sample = CURRENT.get();
+        MeshObservation mesh = sample == null ? null : sample.mesh;
+        if (mesh != null) mesh.increment(phase + "Calls");
+        boolean completed = false;
+        try { render.run(); completed = true; }
+        finally { if (mesh != null && completed) mesh.increment(phase + "NormalReturns"); }
+    }
+
+    public static void vertexColor(float red, float green, float blue, float alpha) {
+        Sample sample = CURRENT.get();
+        MeshObservation mesh = sample == null ? null : sample.mesh;
+        if (mesh == null) return;
+        mesh.increment("colorNormalReturns");
+        JsonArray color = vector(red, green, blue);
+        if (Float.isFinite(alpha)) color.add(alpha); else color.add("NON_FINITE");
+        mesh.row.add("lastReturnedVertexColorRGBA", color);
+    }
+
+    public static void vertexEnded() {
+        Sample sample = CURRENT.get();
+        if (sample != null && sample.mesh != null) sample.mesh.increment("endVertexNormalReturns");
+    }
+
+    private static final class MeshObservation {
+        final JsonObject row = new JsonObject();
+        MeshObservation(String name, int identity) {
+            row.addProperty("boneName", name); row.addProperty("boneIdentity", identity);
+            row.addProperty("evidence", "CPU_BUFFER_CALLS_NOT_GPU_OR_DRAW_COMPLETION");
+            for (String counter : new String[]{"boneCalls", "boneNormalReturns", "cubeCalls", "cubeNormalReturns",
+                    "quadCalls", "quadNormalReturns", "colorNormalReturns", "endVertexNormalReturns"}) row.addProperty(counter, 0L);
+        }
+        void increment(String name) { row.addProperty(name, row.get(name).getAsLong() + 1); }
+    }
     public static boolean wantsBone(String name) {
         Sample sample = CURRENT.get();
         return sample != null && sample.geometry && BONES.contains(name) && !sample.bones.has(name);
@@ -161,13 +243,17 @@ public final class YsmRenderProbe {
     private static final class Sample {
         final JsonObject record = new JsonObject();
         final JsonObject bones = new JsonObject(), requests = new JsonObject();
+        final JsonObject controllers = new JsonObject(), meshBones = new JsonObject();
+        final Map<String, MeshObservation> meshRows = new LinkedHashMap<>();
+        MeshObservation mesh;
+        long omittedControllerReturns, omittedMeshBoneCalls;
         final boolean emit;
         int omittedRequests;
         boolean geometry;
         Sample(AbstractClientPlayer player, Object model, float partialTicks, boolean root,
                String pass, int edge, int offset, boolean emit, FlightRenderDiagnostics.Observation observation) {
             this.emit = emit;
-            record.addProperty("schema", 2); record.addProperty("clientTick", player.ticksExisted);
+            record.addProperty("schema", 3); record.addProperty("clientTick", player.ticksExisted);
             record.addProperty("worldGeneration", generation);
             record.addProperty("clientWorldIdentity", System.identityHashCode(player.world));
             record.addProperty("dimension", player.dimension);
@@ -227,6 +313,8 @@ public final class YsmRenderProbe {
             record.addProperty("missingBoneMeaning", "NOT_OBSERVED_NOT_ZERO");
             record.addProperty("submittedQuads", "NOT_OBSERVED");
             record.add("requestedAnimations", requests); record.add("observedBones", bones);
+            record.add("controllersAtNormalProcessReturn", controllers);
+            record.add("meshBones", meshBones);
         }
     }
 }

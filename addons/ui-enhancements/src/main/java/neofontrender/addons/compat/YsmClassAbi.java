@@ -134,7 +134,70 @@ public final class YsmClassAbi {
             if (method == null || (method.access & (Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC)) != Opcodes.ACC_PUBLIC)
                 return Result.unsupported("probe model resource getter " + getter + " missing/non-instance");
         }
+        return inspectFinalProbe(loader, prefix);
+    }
+
+    private static Result inspectFinalProbe(ClassLoader loader, String prefix) {
+        ClassNode controller = read(loader, prefix + "geckolib3/core/controller/AnimationController");
+        if (controller == null) return Result.unsupported("probe AnimationController missing");
+        for (String[] expected : new String[][]{
+                {"currentAnimation", "L" + prefix + "geckolib3/core/builder/Animation;"},
+                {"animationState", "L" + prefix + "geckolib3/core/AnimationState;"}}) {
+            boolean found = false;
+            for (FieldNode field : controller.fields) {
+                if (expected[0].equals(field.name) && expected[1].equals(field.desc)
+                        && (field.access & (Opcodes.ACC_PROTECTED | Opcodes.ACC_STATIC)) == Opcodes.ACC_PROTECTED)
+                    found = true;
+            }
+            if (!found) return Result.unsupported("probe descriptor-correct controller shadow missing: " + expected[0]);
+        }
+        String process = "(DL" + prefix + "geckolib3/core/event/predicate/AnimationEvent;Ljava/util/List;"
+                + "Ljava/util/Map;L" + prefix + "geckolib3/core/molang/MolangParser;Z)V";
+        if (!isConcreteInstance(findMethod(controller, "process", process)))
+            return Result.unsupported("probe controller process ABI missing");
+        ClassNode animation = read(loader, prefix + "geckolib3/core/builder/Animation");
+        boolean nameFound = false;
+        if (animation != null) for (FieldNode field : animation.fields) {
+            if ("animationName".equals(field.name) && "Ljava/lang/String;".equals(field.desc)
+                    && (field.access & (Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC)) == Opcodes.ACC_PUBLIC)
+                nameFound = true;
+        }
+        if (!nameFound) return Result.unsupported("probe public Animation.animationName missing");
+        ClassNode state = read(loader, prefix + "geckolib3/core/AnimationState");
+        if (state == null || (state.access & Opcodes.ACC_ENUM) == 0)
+            return Result.unsupported("probe AnimationState enum missing");
+        ClassNode mesh = read(loader, prefix + "geckolib3/geo/IGeoRenderer");
+        if (mesh == null || (mesh.access & Opcodes.ACC_INTERFACE) == 0)
+            return Result.unsupported("probe IGeoRenderer interface missing");
+        String built = prefix + "geckolib3/geo/render/built/";
+        String buffer = "Lnet/minecraft/client/renderer/BufferBuilder;";
+        String bone = "(L" + built + "GeoBone;" + buffer + "FFFF)V";
+        String cube = "(" + buffer + "L" + built + "GeoCube;FFFF)V";
+        String quad = "(L" + built + "GeoQuad;Ljavax/vecmath/Vector3f;" + buffer + "FFFF)V";
+        MethodNode boneMethod = findMethod(mesh, "renderCubesOfBone", bone);
+        MethodNode cubeMethod = findMethod(mesh, "renderCube", cube);
+        MethodNode quadMethod = findMethod(mesh, "createVerticesOfQuad", quad);
+        if (!isConcreteInstance(boneMethod) || !isConcreteInstance(cubeMethod) || !isConcreteInstance(quadMethod))
+            return Result.unsupported("probe concrete default mesh method ABI missing");
+        if (countInvocations(boneMethod, mesh.name, "renderCube", cube) != 1
+                || countInvocations(cubeMethod, mesh.name, "createVerticesOfQuad", quad) != 1
+                || countInvocations(quadMethod, "net/minecraft/client/renderer/BufferBuilder", "func_181666_a", "(FFFF)" + buffer) != 1
+                || countInvocations(quadMethod, "net/minecraft/client/renderer/BufferBuilder", "func_181675_d", "()V") != 1)
+            return Result.unsupported("probe exact mesh submission invocation layout changed");
         return Result.supportedResult();
+    }
+
+    private static boolean isConcreteInstance(MethodNode method) {
+        return method != null && (method.access & (Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_ABSTRACT)) == Opcodes.ACC_PUBLIC;
+    }
+
+    private static int countInvocations(MethodNode method, String owner, String name, String descriptor) {
+        int count = 0;
+        for (var instruction : method.instructions) {
+            if (instruction instanceof MethodInsnNode call && owner.equals(call.owner)
+                    && name.equals(call.name) && descriptor.equals(call.desc)) count++;
+        }
+        return count;
     }
 
     /**

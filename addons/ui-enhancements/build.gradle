@@ -11,6 +11,10 @@ version = providers.gradleProperty('ui_enhancements_version').get()
 base { archivesName = 'neofontrender-ui-enhancements' }
 def uiTextProject = project(':addons:ui-enhancements-text')
 def localModularUiPath = rootProject.findProperty('local_modularui_jar')?.toString()?.trim()
+def localYsmAbiPath = rootProject.findProperty('local_ysm_abi_jar')?.toString()?.trim()
+if (!localYsmAbiPath || !file(localYsmAbiPath).isFile()) {
+    throw new GradleException('UIE compilation requires -Plocal_ysm_abi_jar pointing at the selected YSM ABI JAR (compile-only, never embedded)')
+}
 
 // Keep diagnostic logging a true compile-time feature for this addon.  The
 // root project's generated BuildFeatures class is on the compile classpath,
@@ -101,6 +105,8 @@ dependencies {
     contain(project(path: ':engine:audio', configuration: 'shadow')) { transitive = false }
     compileOnly project(':')
     compileOnly files(nfrShadedRuntimeJar)
+    // Exact typed shadows in optional diagnostic mixins; no reflective access or runtime embedding.
+    compileOnly files(localYsmAbiPath)
     implementation uiTextProject
     uiTextEmbed uiTextProject
     if (localModularUiPath) {

@@ -111,6 +111,8 @@
     "tabbychat.IGuiIngame",
     "MixinYsmBoneProbe",
     "MixinYsmAnimationProbe",
+    "MixinYsmControllerProbe",
+    "MixinYsmMeshProbe",
     "MixinYsmModelProbe"
   ]
 }

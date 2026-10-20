@@ -62,6 +62,8 @@ public final class YsmCompat implements ModCompat {
     private static boolean isProbeMixin(String name) {
         return "neofontrender.addons.mixin.MixinYsmBoneProbe".equals(name)
                 || "neofontrender.addons.mixin.MixinYsmAnimationProbe".equals(name)
+                || "neofontrender.addons.mixin.MixinYsmControllerProbe".equals(name)
+                || "neofontrender.addons.mixin.MixinYsmMeshProbe".equals(name)
                 || "neofontrender.addons.mixin.MixinYsmModelProbe".equals(name);
     }
 
