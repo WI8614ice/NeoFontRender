@@ -8,9 +8,34 @@ import java.util.function.Supplier;
 
 /** Purpose comes from the HUD call site, never from player identity or render scale. */
 public final class YsmRenderPurpose {
+    public enum Purpose { WORLD, HUD_PREVIEW, GUI_PREVIEW, UNCLASSIFIED }
     private static final ThreadLocal<Boolean> HUD_PREVIEW = new ThreadLocal<>();
+    private static final ThreadLocal<Purpose> CALL_PURPOSE = new ThreadLocal<>();
 
     private YsmRenderPurpose() { }
+
+    public static Purpose currentPurpose() {
+        if (Boolean.TRUE.equals(HUD_PREVIEW.get())) return Purpose.HUD_PREVIEW;
+        Purpose purpose = CALL_PURPOSE.get();
+        return purpose == null ? Purpose.UNCLASSIFIED : purpose;
+    }
+
+    public static void withWorldRender(PlayerBodyRenderScope.RenderCall render) throws Throwable {
+        withPurpose(Purpose.WORLD, render);
+    }
+
+    public static void withGuiPreview(PlayerBodyRenderScope.RenderCall render) throws Throwable {
+        withPurpose(Purpose.GUI_PREVIEW, render);
+    }
+
+    private static void withPurpose(Purpose purpose, PlayerBodyRenderScope.RenderCall render) throws Throwable {
+        Purpose previous = CALL_PURPOSE.get();
+        CALL_PURPOSE.set(purpose);
+        try { render.run(); }
+        finally {
+            if (previous == null) CALL_PURPOSE.remove(); else CALL_PURPOSE.set(previous);
+        }
+    }
 
     public static void withHudPreview(PlayerBodyRenderScope.RenderCall render) throws Throwable {
         Objects.requireNonNull(render, "render");

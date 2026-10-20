@@ -5,12 +5,14 @@ import com.google.gson.JsonObject;
 import java.lang.ref.WeakReference;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.entity.AbstractClientPlayer;
 import net.minecraft.entity.EntityLivingBase;
 import neofontrender.addons.camera.CameraRuntime;
+import neofontrender.addons.api.flight.FlightRenderDiagnostics;
 import neofontrender.addons.flight.PlayerBodyRenderScope;
 import neofontrender.addons.ui.NfrUiEnhancements;
 
@@ -23,7 +25,8 @@ public final class YsmRenderProbe {
     private static final ThreadLocal<Sample> CURRENT = new ThreadLocal<>();
     private static WeakReference<Object> world = new WeakReference<>(null);
     private static UUID playerId;
-    private static Boolean flying;
+    private record GravityKey(String identity, boolean requested, Boolean acknowledged, boolean effective) { }
+    private static GravityKey gravity;
     private static long generation;
     private static int entityId;
     private static int edge, edgeTick, lastTick = Integer.MIN_VALUE;
@@ -47,30 +50,36 @@ public final class YsmRenderProbe {
         if (world.get() != player.world || !player.getUniqueID().equals(playerId) || tick < lastTick || player.getEntityId() != entityId) {
             world = new WeakReference<>(player.world); playerId = player.getUniqueID();
             entityId = player.getEntityId(); generation++;
-            flying = null; edge = 0; edgeTick = tick; captured.clear(); previous.clear();
+            gravity = null; edge = 0; edgeTick = tick; captured.clear(); previous.clear();
         }
         lastTick = tick;
-        if (flying != null && flying != player.capabilities.isFlying) {
-            if (edge < 6) {
+        var purpose = YsmRenderPurpose.currentPurpose();
+        var observation = FlightRenderDiagnostics.observe(player, player.world, tick);
+        if (purpose == YsmRenderPurpose.Purpose.WORLD && observation != null) {
+            var currentGravity = new GravityKey(observation.gravityIdentity(), observation.requestedG(),
+                    observation.acknowledgedG(), observation.effectiveG());
+            if (gravity != null && !Objects.equals(gravity, currentGravity)) {
                 edge++; edgeTick = tick; captured.clear();
                 for (String cached : previous.values()) {
                     NfrUiEnhancements.LOGGER.info("YSM_PROBE pre_edge={} nextEdge={} snapshot={}",
                             edge - 1, edge, cached);
                 }
             }
+            if (gravity == null) { edgeTick = tick; captured.clear(); }
+            gravity = currentGravity;
         }
-        flying = player.capabilities.isFlying;
-        String pass = (YsmRenderPurpose.usesNativePreview() ? "native_preview" : "world_or_gui")
-                + ":view=" + mc.gameSettings.thirdPersonView;
+        int view = mc.gameSettings.thirdPersonView;
+        String pass = purpose.name() + ":view=" + (view >= 0 && view <= 2 ? Integer.toString(view) : "OTHER");
         int offset = tick - edgeTick;
         boolean window = offset == 0 || offset == 1 || offset == 5 || offset == 10;
         // A rolling pre-edge observation is captured at most once per ten ticks per view.
-        boolean selected = (edge < 6 || offset <= 10) && (window || tick % 10 == 0)
+        // Four purposes times four view buckets: previews cannot exhaust the world's slots.
+        boolean selected = (window || tick % 10 == 0)
                 && captured.getOrDefault(pass, Integer.MIN_VALUE) != tick
-                && (captured.containsKey(pass) || captured.size() < 3);
+                && (captured.containsKey(pass) || captured.size() < 16);
         Sample outer = CURRENT.get();
         Sample sample = selected ? new Sample(player, model, partialTicks, ownsRoot, pass,
-                edge, offset, window) : null;
+                edge, offset, window || purpose == YsmRenderPurpose.Purpose.WORLD, observation) : null;
         if (sample == null) CURRENT.remove(); else { CURRENT.set(sample); captured.put(pass, tick); }
         boolean completed = false;
         try { render.run(); completed = true; }
@@ -79,7 +88,7 @@ public final class YsmRenderProbe {
             if (sample != null) {
                 sample.record.addProperty("renderCompleted", completed);
                 String encoded = sample.record.toString();
-                if (previous.containsKey(pass) || previous.size() < 3) previous.put(pass, encoded);
+                if (previous.containsKey(pass) || previous.size() < 16) previous.put(pass, encoded);
                 if (sample.emit) NfrUiEnhancements.LOGGER.info("YSM_PROBE {}", encoded);
             }
         }
@@ -156,16 +165,35 @@ public final class YsmRenderProbe {
         int omittedRequests;
         boolean geometry;
         Sample(AbstractClientPlayer player, Object model, float partialTicks, boolean root,
-               String pass, int edge, int offset, boolean emit) {
+               String pass, int edge, int offset, boolean emit, FlightRenderDiagnostics.Observation observation) {
             this.emit = emit;
-            record.addProperty("schema", 1); record.addProperty("clientTick", player.ticksExisted);
+            record.addProperty("schema", 2); record.addProperty("clientTick", player.ticksExisted);
             record.addProperty("worldGeneration", generation);
             record.addProperty("clientWorldIdentity", System.identityHashCode(player.world));
             record.addProperty("dimension", player.dimension);
             record.addProperty("entityId", player.getEntityId());
+            record.addProperty("renderEntityClass", player.getClass().getName());
+            record.addProperty("logicalLocalPlayerEntityId", Minecraft.getMinecraft().player.getEntityId());
+            record.addProperty("logicalPlayerMatch", "EXACT_INSTANCE");
+            record.addProperty("animatableClass", model == null ? "NULL" : model.getClass().getName());
+            record.addProperty("animatableIdentity", System.identityHashCode(model));
+            record.addProperty("thirdPersonView", Minecraft.getMinecraft().gameSettings.thirdPersonView);
             record.addProperty("edge", edge); record.addProperty("offsetTicks", offset);
             record.addProperty("pass", pass); record.addProperty("partialTicks", partialTicks);
-            record.addProperty("gState", "NOT_OBSERVED_CORRELATE_UG_CLIENT_TICK");
+            record.addProperty("edgeTrigger", "WORLD_PROVIDER_GRAVITY_OBSERVATION_CHANGE_NOT_NATIVE_FLYING");
+            if (observation == null) {
+                record.addProperty("gState", "NOT_OBSERVED_FOR_EXACT_ACTOR_WORLD_TICK");
+            } else {
+                record.addProperty("gState", "PROVIDER_OBSERVATION");
+                record.addProperty("gRequested", observation.requestedG());
+                if (observation.acknowledgedG() == null) record.addProperty("gAcknowledged", "NOT_OBSERVED");
+                else record.addProperty("gAcknowledged", observation.acknowledgedG());
+                record.addProperty("gEffective", observation.effectiveG());
+                record.addProperty("gIdentity", observation.gravityIdentity());
+                record.addProperty("physicalScope", observation.physicalScope());
+                record.addProperty("physicalRevision", observation.physicalRevision());
+                record.addProperty("providerClientTick", observation.clientTick());
+            }
             record.addProperty("bridgeOwnsRoot", root);
             record.addProperty("geometryInvocationObserved", false);
             record.addProperty("rootInvocationObserved", false);
