@@ -231,6 +231,8 @@ public final class CameraRuntime {
                 .subtract(ActiveRenderInfo.getCameraPosition());
         sample.finalCameraOrigin = new Vec3d(base.x + origin.x / origin.w, base.y + origin.y / origin.w,
                 base.z + origin.z / origin.w);
+        CameraEyeProbe.capture(renderEntity, sample.partialTicks, sample.frame, sample.finalCameraOrigin,
+                sample.perspective, sample.ownsNativeOrigin(), sample.cameraSetupApplied);
     }
 
     static final class NativeCameraRenderSample {
