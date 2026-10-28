@@ -17,6 +17,8 @@ import neofontrender.addons.input.VanillaInputBridge;
 import neofontrender.addons.input.PlayerMovementInputBridge;
 import neofontrender.addons.input.InputCommandEdges;
 import neofontrender.addons.shadows.PlayerShadowConfig;
+import neofontrender.addons.shadows.ShadowTerrainCache;
+import net.minecraft.client.resources.IReloadableResourceManager;
 import neofontrender.addons.api.input.InputAction;
 import neofontrender.addons.api.input.InputApi;
 import neofontrender.addons.api.input.InputFrame;
@@ -70,6 +72,8 @@ public final class CameraModule implements UiEnhancementModule {
         MinecraftForge.EVENT_BUS.register(PlayerMovementInputBridge.INSTANCE);
         MinecraftForge.EVENT_BUS.register(CameraRenderBridge.INSTANCE);
         MinecraftForge.EVENT_BUS.register(this);
+        ((IReloadableResourceManager) Minecraft.getMinecraft().getResourceManager())
+                .registerReloadListener(ShadowTerrainCache.INSTANCE);
     }
 
     /** Avoid owning Minecraft's hotbar redirect so inventory mods can compose with this gate. */
@@ -182,6 +186,7 @@ public final class CameraModule implements UiEnhancementModule {
     @SubscribeEvent
     public void worldUnload(WorldEvent.Unload event) {
         if (event.getWorld() != null && event.getWorld().isRemote) {
+            ShadowTerrainCache.INSTANCE.unload(event.getWorld());
             try {
                 closeInteractiveSession();
             } finally {
