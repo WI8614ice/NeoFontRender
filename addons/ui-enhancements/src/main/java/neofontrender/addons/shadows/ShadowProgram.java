@@ -29,6 +29,7 @@ final class ShadowProgram implements AutoCloseable {
             GL20.glAttachShader(program, vs); GL20.glAttachShader(program, fs);
             GL20.glBindAttribLocation(program, 0, "position");
             GL20.glBindAttribLocation(program, 1, "auxiliary");
+            GL20.glBindAttribLocation(program, 2, "vertexAlpha");
             GL30.glBindFragDataLocation(program, 0, output);
             GL20.glLinkProgram(program);
             if (GL20.glGetProgrami(program, GL20.GL_LINK_STATUS) == GL11.GL_FALSE)

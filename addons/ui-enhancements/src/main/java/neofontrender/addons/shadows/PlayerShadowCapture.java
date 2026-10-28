@@ -12,6 +12,7 @@ import net.minecraft.client.entity.AbstractClientPlayer;
 import net.minecraft.client.model.ModelBox;
 import net.minecraft.client.model.ModelRenderer;
 import net.minecraft.client.model.TexturedQuad;
+import net.minecraft.client.renderer.BufferBuilder;
 import net.minecraft.client.renderer.GlStateManager;
 import net.minecraft.client.renderer.OpenGlHelper;
 import neofontrender.addons.api.flight.FlightApi;
@@ -24,11 +25,12 @@ import org.joml.Matrix4f;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL13;
+import org.lwjgl.opengl.GL20;
 
 /** Collects geometry during the real body render, after animation/root sampling and before later models mutate it. */
 public final class PlayerShadowCapture {
     public enum Availability { READY, NO_GEOMETRY, UNSUPPORTED_MODEL_GEOMETRY, NATIVE_MODEL_UNAVAILABLE,
-        UNSUPPORTED_PLAYER_RENDERER, MODEL_RENDER_FAILED }
+        UNSUPPORTED_PLAYER_RENDERER, MODEL_RENDER_FAILED, UNSUPPORTED_SUBMITTED_GEOMETRY, UNSUPPORTED_ITEM_RENDERER }
     public record Caster(UUID playerId, FlightBodyPose pose, Availability availability,
                          List<ShadowCasterMesh.Part> parts) {
         public Caster { parts = List.copyOf(parts); }
@@ -36,6 +38,8 @@ public final class PlayerShadowCapture {
     public record Subject(UUID playerId, FlightBodyPose pose) {}
 
     private static final Deque<Capture> STACK = new ArrayDeque<>();
+    private static final Deque<Capture> SUBMITTED = new ArrayDeque<>();
+    private static int modelDrawDepth;
     private static final Map<UUID, Caster> CASTERS = new LinkedHashMap<>();
     private static final Map<UUID, Subject> SUBJECTS = new LinkedHashMap<>();
     private static TerrainSceneFrame.WorldScope frame;
@@ -53,9 +57,14 @@ public final class PlayerShadowCapture {
         }
         var body = PlayerBodyRenderScope.current(player);
         FlightBodyPose pose = body == null ? FlightApi.queryBodyPose(player, current.partialTicks()) : body.pose();
-        if (current.shadowMode() == PlayerShadowMode.REAL_PLAYER_PROJECTION)
-            withCapture(current, player, player.getUniqueID(), pose, render);
-        else withFence(render);
+        if (current.shadowMode() == PlayerShadowMode.REAL_PLAYER_PROJECTION) {
+            var enclosing = STACK.peek();
+            if (frame == current && enclosing != null && enclosing.player == player) {
+                // YSM owns a nested root scope inside RenderPlayer's event; preserve its actual sampled pose.
+                enclosing.pose = pose;
+                render.run();
+            } else withCapture(current, player, player.getUniqueID(), pose, render);
+        } else withFence(render);
         rememberSubject(current, player, pose);
     }
 
@@ -111,24 +120,72 @@ public final class PlayerShadowCapture {
         }
     }
 
-    /** Native YSM draw has no verified frozen-geometry contract; never substitute vanilla body parts. */
-    public static void nativeModelUnavailable(Object player) {
-        var current = TerrainSceneFrame.current();
-        if (!(player instanceof AbstractClientPlayer rendered) || current == null
-                || current.availability() != TerrainSceneFrame.Availability.READY
-                || rendered.isSpectator() || rendered.isInvisible()
-                || YsmRenderPurpose.currentPurpose() != YsmRenderPurpose.Purpose.WORLD) return;
-        var body = PlayerBodyRenderScope.current(rendered);
-        FlightBodyPose pose = body == null ? FlightApi.queryBodyPose(rendered, current.partialTicks()) : body.pose();
-        rememberSubject(current, rendered, pose);
-        if (current.shadowMode() != PlayerShadowMode.REAL_PLAYER_PROJECTION) return;
-        var capture = STACK.peek();
-        if (capture != null && capture.player == player) {
-            capture.unavailable = Availability.NATIVE_MODEL_UNAVAILABLE;
-        } else {
-            CASTERS.put(rendered.getUniqueID(), new Caster(rendered.getUniqueID(), pose,
-                    Availability.NATIVE_MODEL_UNAVAILABLE, List.of()));
+    /** Only the verified YSM geometry and baked-item entry points may collect submitted buffers. */
+    public static void withSubmittedGeometry(Runnable render) {
+        Capture capture = STACK.peek();
+        Capture fence = capture != null ? capture : new Capture(null, null);
+        SUBMITTED.push(fence);
+        try { render.run(); }
+        finally {
+            if (SUBMITTED.pop() != fence) throw new IllegalStateException("Submitted geometry scope closed out of order");
         }
+    }
+
+    /** Display-list compilation emits the same ModelRenderer quads already frozen by modelPart. */
+    public static void withModelDraw(PlayerBodyRenderScope.RenderCall render) throws Throwable {
+        modelDrawDepth++;
+        try { render.run(); }
+        finally { modelDrawDepth--; }
+    }
+
+    public static void unsupportedItemRenderer() {
+        if (frame == null || frame != TerrainSceneFrame.current()
+                || frame.availability() != TerrainSceneFrame.Availability.READY
+                || YsmRenderPurpose.currentPurpose() != YsmRenderPurpose.Purpose.WORLD) return;
+        var capture = STACK.peek();
+        if (capture != null && capture.player != null) capture.unavailable = Availability.UNSUPPORTED_ITEM_RENDERER;
+    }
+
+    /** Called before Tessellator finishes/resets this actual batch; no second render or bone update. */
+    public static void submittedBuffer(BufferBuilder buffer) {
+        if (frame == null || frame != TerrainSceneFrame.current()
+                || frame.availability() != TerrainSceneFrame.Availability.READY || modelDrawDepth != 0) return;
+        Capture capture = STACK.peek();
+        if (capture == null || capture.player == null || capture.unavailable != null
+                || SUBMITTED.peek() != capture || buffer.getVertexCount() == 0
+                || YsmRenderPurpose.currentPurpose() != YsmRenderPurpose.Purpose.WORLD) return;
+        var body = PlayerBodyRenderScope.current();
+        if (body != null && body.entity() != capture.player) return;
+        if (GL11.glGetInteger(GL11.GL_DEPTH_FUNC) == GL11.GL_EQUAL) return;
+        if (GL11.glGetInteger(GL11.GL_MATRIX_MODE) != GL11.GL_MODELVIEW
+                || GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM) != 0) {
+            capture.unavailable = Availability.UNSUPPORTED_SUBMITTED_GEOMETRY;
+            return;
+        }
+        Matrix4f world = new Matrix4f().set(frame.projection().inverseModelView())
+                .mul(new Matrix4f().set(matrix(GL11.GL_MODELVIEW_MATRIX)));
+        int active = GL11.glGetInteger(GL13.GL_ACTIVE_TEXTURE);
+        GlStateManager.setActiveTexture(OpenGlHelper.defaultTexUnit);
+        try {
+            boolean textured = GL11.glIsEnabled(GL11.GL_TEXTURE_2D);
+            if (textured && GL11.glGetTexEnvi(GL11.GL_TEXTURE_ENV, GL11.GL_TEXTURE_ENV_MODE) != GL11.GL_MODULATE) {
+                capture.unavailable = Availability.UNSUPPORTED_SUBMITTED_GEOMETRY;
+                return;
+            }
+            boolean alpha = GL11.glIsEnabled(GL11.GL_ALPHA_TEST), blend = GL11.glIsEnabled(GL11.GL_BLEND);
+            var material = new ShadowCasterMesh.Material(GL11.glGetInteger(GL11.GL_TEXTURE_BINDING_2D), textured,
+                    alpha || blend, alpha ? GL11.glGetInteger(GL11.GL_ALPHA_TEST_FUNC) : GL11.GL_GREATER,
+                    alpha ? GL11.glGetFloat(GL11.GL_ALPHA_TEST_REF) : 0);
+            FloatBuffer color = BufferUtils.createFloatBuffer(4); GL11.glGetFloat(GL11.GL_CURRENT_COLOR, color);
+            try {
+                var part = ShadowCasterMesh.freezeSubmitted(buffer.getByteBuffer(), buffer.getVertexCount(),
+                        buffer.getDrawMode(), buffer.getVertexFormat(), world.get(new float[16]),
+                        matrix(GL11.GL_TEXTURE_MATRIX), material, color.get(3));
+                if (part != null) capture.parts.add(part);
+            } catch (UnsupportedOperationException unsupported) {
+                capture.unavailable = Availability.UNSUPPORTED_SUBMITTED_GEOMETRY;
+            }
+        } finally { GlStateManager.setActiveTexture(active); }
     }
 
     public static List<Caster> currentCasters() {
@@ -177,7 +234,8 @@ public final class PlayerShadowCapture {
         if (body != null && body.entity() != capture.player) return;
         if (YsmRenderPurpose.currentPurpose() != YsmRenderPurpose.Purpose.WORLD) return;
         if (GL11.glGetInteger(GL11.GL_DEPTH_FUNC) == GL11.GL_EQUAL) return; // glint reuses existing surface depth
-        if (model.getClass() != ModelRenderer.class || GL11.glGetInteger(GL11.GL_MATRIX_MODE) != GL11.GL_MODELVIEW) {
+        if (model.getClass() != ModelRenderer.class || GL11.glGetInteger(GL11.GL_MATRIX_MODE) != GL11.GL_MODELVIEW
+                || GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM) != 0) {
             capture.unavailable = Availability.UNSUPPORTED_MODEL_GEOMETRY;
             return;
         }
@@ -231,7 +289,7 @@ public final class PlayerShadowCapture {
     }
     private static final class Capture {
         private final Object player;
-        private final FlightBodyPose pose;
+        private FlightBodyPose pose;
         private final List<ShadowCasterMesh.Part> parts = new ArrayList<>();
         private Availability unavailable;
         private Capture(Object player, FlightBodyPose pose) { this.player = player; this.pose = pose; }

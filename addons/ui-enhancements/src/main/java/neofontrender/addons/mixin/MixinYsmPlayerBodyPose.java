@@ -47,8 +47,10 @@ abstract class MixinYsmPlayerBodyPose {
                 && FlightBodyPresentationPolicy.resolve(pose, player.isElytraFlying())
                 .ownsRootQuaternion(),
                 () -> {
-                    PlayerShadowCapture.nativeModelUnavailable(entity);
-                    YsmRenderProbe.withRender(entity, animatable, partialTicks,
+                    if (entity instanceof AbstractClientPlayer player) {
+                        PlayerShadowCapture.withPlayer(player, () -> YsmRenderProbe.withRender(entity, animatable, partialTicks,
+                                () -> original.call(entity, animatable, x, y, z, entityYaw, partialTicks)));
+                    } else YsmRenderProbe.withRender(entity, animatable, partialTicks,
                             () -> original.call(entity, animatable, x, y, z, entityYaw, partialTicks));
                 });
     }
@@ -134,8 +136,8 @@ abstract class MixinYsmPlayerBodyPose {
                                         Operation<Void> original) {
         float scopedAlpha = CameraRuntime.isShoulderTransparencyRenderActive()
                 ? Math.min(alpha, CameraRuntime.shoulderPlayerAlpha()) : alpha;
-        YsmRenderProbe.geometry(() -> original.call(renderer, model, animatable, partialTicks,
-                red, green, blue, scopedAlpha));
+        PlayerShadowCapture.withSubmittedGeometry(() -> YsmRenderProbe.geometry(
+                () -> original.call(renderer, model, animatable, partialTicks, red, green, blue, scopedAlpha)));
     }
 
     @Unique

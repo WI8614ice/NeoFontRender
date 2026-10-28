@@ -153,7 +153,7 @@ public final class ShadowLightDepthPass implements AutoCloseable {
                 program.integer("textured", material.textured() ? 1 : 0);
                 program.integer("alphaFunction", material.alphaTest() ? material.alphaFunction() : GL11.GL_ALWAYS);
                 program.scalar("alphaReference", material.alphaReference());
-                draw(part.vertices(), part.vertexCount());
+                draw(part.vertices(), part.vertexCount(), true);
             }
             ShadowGlDiagnostics.check("draw light-space player frame=" + frame.id() + " subject="
                     + (caster == null ? "AXIAL_DISC_NO_MODEL_SUBSTITUTE" : caster.playerId()));
@@ -207,12 +207,19 @@ public final class ShadowLightDepthPass implements AutoCloseable {
                     (float) (base.getY() - origin.originY), (float) (base.getZ() - origin.originZ));
             for (var mesh : section.meshes()) {
                 program.integer("alphaFunction", mesh.layer == BlockRenderLayer.SOLID ? GL11.GL_ALWAYS : GL11.GL_GREATER);
-                program.scalar("alphaReference", .1F); draw(mesh.vertices(), mesh.vertexCount());
+                program.scalar("alphaReference", .1F); draw(mesh.vertices(), mesh.vertexCount(), false);
             }
         }
     }
 
-    private void draw(FloatBuffer vertices, int count) {
+    private void draw(FloatBuffer vertices, int count, boolean playerMesh) {
+        int stride = playerMesh ? 28 : 24;
+        GL20.glVertexAttribPointer(0, 3, GL11.GL_FLOAT, false, stride, 0L);
+        GL20.glVertexAttribPointer(1, 3, GL11.GL_FLOAT, false, stride, 12L);
+        if (playerMesh) {
+            GL20.glEnableVertexAttribArray(2);
+            GL20.glVertexAttribPointer(2, 1, GL11.GL_FLOAT, false, stride, 24L);
+        } else GL20.glDisableVertexAttribArray(2);
         FloatBuffer upload = BufferUtils.createFloatBuffer(vertices.remaining());
         upload.put(vertices).flip();
         GL15.glBufferData(GL15.GL_ARRAY_BUFFER, upload, GL15.GL_STREAM_DRAW);

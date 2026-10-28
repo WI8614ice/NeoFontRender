@@ -8,6 +8,7 @@ uniform vec3 sourceBlockMin;
 in vec3 skinCoordinate;
 in vec3 worldPoint;
 in float emission;
+in float primaryAlpha;
 out float sourceEmission;
 bool alphaPass(float a) {
     if (alphaFunction == 512) return false;
@@ -26,7 +27,7 @@ void main() {
             && all(lessThanEqual(worldPoint, sourceBlockMin + vec3(1.00001)))) discard;
     if (textured != 0) {
         if (skinCoordinate.z == 0.0) discard;
-        if (!alphaPass(texture(materialTexture, skinCoordinate.xy / skinCoordinate.z).a)) discard;
-    } else if (!alphaPass(1.0)) discard;
+        if (!alphaPass(texture(materialTexture, skinCoordinate.xy / skinCoordinate.z).a * primaryAlpha)) discard;
+    } else if (!alphaPass(primaryAlpha)) discard;
     sourceEmission = emission;
 }
