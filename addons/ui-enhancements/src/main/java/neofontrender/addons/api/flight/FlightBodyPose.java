@@ -33,6 +33,8 @@ public final class FlightBodyPose {
     public final ShadowReference shadowReference;
     /** Accepted world axis for a constrained body, independent of visual reference interpolation. */
     public final FlightVector shadowAxisUp;
+    /** Accepted world bounds from the same provider sample; never inferred from a remote vanilla entity box. */
+    public final FlightBodyBounds shadowBounds;
 
     /** Keeps the API 9 JVM descriptor and aircraft-local +Z interpretation. */
     public FlightBodyPose(FlightAttitude attitude) {
@@ -61,6 +63,12 @@ public final class FlightBodyPose {
     private FlightBodyPose(FlightAttitude attitude, Basis basis,
                            FlightAttitude headWorldAttitude, FlightVector rootWorldOffset, FlightBodyGeometry geometry,
                            ShadowReference shadowReference, FlightVector shadowAxisUp) {
+        this(attitude, basis, headWorldAttitude, rootWorldOffset, geometry, shadowReference, shadowAxisUp, null);
+    }
+
+    private FlightBodyPose(FlightAttitude attitude, Basis basis,
+                           FlightAttitude headWorldAttitude, FlightVector rootWorldOffset, FlightBodyGeometry geometry,
+                           ShadowReference shadowReference, FlightVector shadowAxisUp, FlightBodyBounds shadowBounds) {
         this.attitude = Objects.requireNonNull(attitude, "attitude");
         this.basis = Objects.requireNonNull(basis, "basis");
         this.headWorldAttitude = headWorldAttitude;
@@ -68,6 +76,7 @@ public final class FlightBodyPose {
         this.geometry = geometry;
         this.shadowReference = shadowReference;
         this.shadowAxisUp = shadowAxisUp;
+        this.shadowBounds = shadowBounds;
     }
 
     /** Creates a pose whose quaternion directly maps the model's local +Y up axis to world space. */
@@ -93,7 +102,7 @@ public final class FlightBodyPose {
     /** Adds sampled capsule/eye to this pose without changing the legacy factory descriptors. */
     public FlightBodyPose withGeometry(FlightBodyGeometry geometry) {
         return new FlightBodyPose(attitude, basis, headWorldAttitude, rootWorldOffset,
-                Objects.requireNonNull(geometry, "geometry"), shadowReference, shadowAxisUp);
+                Objects.requireNonNull(geometry, "geometry"), shadowReference, shadowAxisUp, shadowBounds);
     }
 
     /** Free pose never emits the axial disc, including while its quaternion happens to be cardinal. */
@@ -111,5 +120,12 @@ public final class FlightBodyPose {
             throw new IllegalArgumentException("Accepted cardinal shadow axis required");
         return new FlightBodyPose(attitude, basis, headWorldAttitude, rootWorldOffset, geometry,
                 ShadowReference.AXIAL, up);
+    }
+
+    public FlightBodyPose withShadowBounds(FlightBodyBounds bounds) {
+        if (shadowReference != ShadowReference.AXIAL)
+            throw new IllegalStateException("Accepted shadow bounds require an axial reference");
+        return new FlightBodyPose(attitude, basis, headWorldAttitude, rootWorldOffset, geometry,
+                shadowReference, shadowAxisUp, Objects.requireNonNull(bounds, "bounds"));
     }
 }

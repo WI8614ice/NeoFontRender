@@ -37,7 +37,6 @@ abstract class MixinYsmPlayerBodyPose {
                                                   double x, double y, double z,
                                                   float entityYaw, float partialTicks,
                                                   Operation<Void> original) throws Throwable {
-        PlayerShadowCapture.nativeModelUnavailable(entity);
         PlayerBodyRenderScope.withSampledPose(entity, () -> {
             if (!(entity instanceof AbstractClientPlayer player)
                     || !nfrUi$mayOwnRoot(player)) return null;
@@ -47,8 +46,11 @@ abstract class MixinYsmPlayerBodyPose {
         }, pose -> entity instanceof AbstractClientPlayer player
                 && FlightBodyPresentationPolicy.resolve(pose, player.isElytraFlying())
                 .ownsRootQuaternion(),
-                () -> YsmRenderProbe.withRender(entity, animatable, partialTicks,
-                        () -> original.call(entity, animatable, x, y, z, entityYaw, partialTicks)));
+                () -> {
+                    PlayerShadowCapture.nativeModelUnavailable(entity);
+                    YsmRenderProbe.withRender(entity, animatable, partialTicks,
+                            () -> original.call(entity, animatable, x, y, z, entityYaw, partialTicks));
+                });
     }
 
     @WrapOperation(

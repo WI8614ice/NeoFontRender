@@ -7,6 +7,7 @@ import net.minecraft.client.renderer.EntityRenderer;
 import neofontrender.addons.shadows.TerrainSceneFrame;
 import neofontrender.addons.shadows.PlayerShadowCapture;
 import neofontrender.addons.shadows.ShadowTerrainCache;
+import neofontrender.addons.shadows.PlayerShadowRuntime;
 import net.minecraft.client.Minecraft;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
@@ -37,5 +38,16 @@ public abstract class MixinActiniumWorldShadowFrame {
     }, remap = false, require = 1, expect = 1, allow = 1)
     private void nfrUi$opaqueTerrainComplete(int pass, float partialTicks, long finishTime, CallbackInfo ci) {
         TerrainSceneFrame.opaqueComplete();
+        PlayerShadowRuntime.INSTANCE.beforeEntities();
+    }
+
+    @Inject(method = {"renderWorldPass(IFJ)V", "func_175068_a(IFJ)V"}, at = {
+            @At(value = "INVOKE", target = "Lnet/minecraft/client/renderer/RenderGlobal;renderEntities(Lnet/minecraft/entity/Entity;Lnet/minecraft/client/renderer/culling/ICamera;F)V",
+                    ordinal = 0, shift = At.Shift.AFTER, remap = false),
+            @At(value = "INVOKE", target = "Lnet/minecraft/client/renderer/RenderGlobal;func_180446_a(Lnet/minecraft/entity/Entity;Lnet/minecraft/client/renderer/culling/ICamera;F)V",
+                    ordinal = 0, shift = At.Shift.AFTER, remap = false)
+    }, remap = false, require = 1, expect = 1, allow = 1)
+    private void nfrUi$entityDepthComplete(int pass, float partialTicks, long finishTime, CallbackInfo ci) {
+        PlayerShadowRuntime.INSTANCE.afterEntities();
     }
 }

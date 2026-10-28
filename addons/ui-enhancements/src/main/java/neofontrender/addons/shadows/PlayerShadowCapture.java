@@ -14,6 +14,7 @@ import net.minecraft.client.model.ModelRenderer;
 import net.minecraft.client.model.TexturedQuad;
 import net.minecraft.client.renderer.GlStateManager;
 import net.minecraft.client.renderer.OpenGlHelper;
+import neofontrender.addons.api.flight.FlightApi;
 import neofontrender.addons.api.flight.FlightBodyPose;
 import neofontrender.addons.api.flight.PlayerShadowMode;
 import neofontrender.addons.compat.YsmRenderPurpose;
@@ -31,9 +32,11 @@ public final class PlayerShadowCapture {
                          List<ShadowCasterMesh.Part> parts) {
         public Caster { parts = List.copyOf(parts); }
     }
+    public record Subject(UUID playerId, FlightBodyPose pose) {}
 
     private static final Deque<Capture> STACK = new ArrayDeque<>();
     private static final Map<UUID, Caster> CASTERS = new LinkedHashMap<>();
+    private static final Map<UUID, Subject> SUBJECTS = new LinkedHashMap<>();
     private static TerrainSceneFrame.WorldScope frame;
 
     private PlayerShadowCapture() {}
@@ -41,7 +44,6 @@ public final class PlayerShadowCapture {
     public static void withPlayer(AbstractClientPlayer player, PlayerBodyRenderScope.RenderCall render) throws Throwable {
         var current = TerrainSceneFrame.current();
         if (current == null || current.availability() != TerrainSceneFrame.Availability.READY
-                || PlayerShadowConfig.mode() != PlayerShadowMode.REAL_PLAYER_PROJECTION
                 || YsmRenderPurpose.currentPurpose() != YsmRenderPurpose.Purpose.WORLD
                 || player.isSpectator() || player.isInvisible()) {
             // A nested preview must fence the enclosing world's collector too.
@@ -49,7 +51,33 @@ public final class PlayerShadowCapture {
             return;
         }
         var body = PlayerBodyRenderScope.current(player);
-        withCapture(current, player, player.getUniqueID(), body == null ? null : body.pose(), render);
+        FlightBodyPose pose = body == null ? FlightApi.queryBodyPose(player, current.partialTicks()) : body.pose();
+        if (current.shadowMode() == PlayerShadowMode.REAL_PLAYER_PROJECTION)
+            withCapture(current, player, player.getUniqueID(), pose, render);
+        else withFence(render);
+        rememberSubject(current, player, pose);
+    }
+
+    private static void adopt(TerrainSceneFrame.WorldScope current) {
+        if (frame != current) { CASTERS.clear(); SUBJECTS.clear(); frame = current; }
+    }
+
+    private static void rememberSubject(TerrainSceneFrame.WorldScope current, AbstractClientPlayer player, FlightBodyPose pose) {
+        adopt(current);
+        SUBJECTS.putIfAbsent(player.getUniqueID(), new Subject(player.getUniqueID(), pose));
+    }
+
+    /** A first-person body may not have been drawn; sample only missing physical pose, never invent a model mesh. */
+    public static void includeUnrenderedSubject(AbstractClientPlayer player) {
+        var current = TerrainSceneFrame.current();
+        if (current == null || current.availability() != TerrainSceneFrame.Availability.READY
+                || player.isSpectator() || player.isInvisible()) return;
+        if (frame == current && SUBJECTS.containsKey(player.getUniqueID())) return;
+        rememberSubject(current, player, FlightApi.queryBodyPose(player, current.partialTicks()));
+    }
+
+    public static List<Subject> currentSubjects() {
+        return frame != null && frame == TerrainSceneFrame.current() ? List.copyOf(SUBJECTS.values()) : List.of();
     }
 
     /** Frame/identity lease is independent of Minecraft model mutation and GL geometry sampling. */
@@ -58,7 +86,7 @@ public final class PlayerShadowCapture {
         if (current == null || TerrainSceneFrame.current() != current
                 || current.availability() != TerrainSceneFrame.Availability.READY)
             throw new IllegalStateException("Player capture requires the current ready terrain frame");
-        if (frame != current) { CASTERS.clear(); frame = current; }
+        adopt(current);
         if (CASTERS.containsKey(id)) { withFence(render); return; }
         Capture capture = new Capture(player, pose);
         STACK.push(capture);
@@ -87,14 +115,17 @@ public final class PlayerShadowCapture {
         var current = TerrainSceneFrame.current();
         if (!(player instanceof AbstractClientPlayer rendered) || current == null
                 || current.availability() != TerrainSceneFrame.Availability.READY
-                || PlayerShadowConfig.mode() != PlayerShadowMode.REAL_PLAYER_PROJECTION
+                || rendered.isSpectator() || rendered.isInvisible()
                 || YsmRenderPurpose.currentPurpose() != YsmRenderPurpose.Purpose.WORLD) return;
+        var body = PlayerBodyRenderScope.current(rendered);
+        FlightBodyPose pose = body == null ? FlightApi.queryBodyPose(rendered, current.partialTicks()) : body.pose();
+        rememberSubject(current, rendered, pose);
+        if (current.shadowMode() != PlayerShadowMode.REAL_PLAYER_PROJECTION) return;
         var capture = STACK.peek();
         if (capture != null && capture.player == player) {
             capture.unavailable = Availability.NATIVE_MODEL_UNAVAILABLE;
         } else {
-            if (frame != current) { CASTERS.clear(); frame = current; }
-            CASTERS.put(rendered.getUniqueID(), new Caster(rendered.getUniqueID(), null,
+            CASTERS.put(rendered.getUniqueID(), new Caster(rendered.getUniqueID(), pose,
                     Availability.NATIVE_MODEL_UNAVAILABLE, List.of()));
         }
     }
@@ -108,6 +139,7 @@ public final class PlayerShadowCapture {
             if (!STACK.isEmpty()) throw new IllegalStateException("Player capture outlived world frame");
             frame = null;
             CASTERS.clear();
+            SUBJECTS.clear();
         }
     }
 

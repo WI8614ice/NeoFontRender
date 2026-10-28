@@ -66,6 +66,12 @@ public final class ShadowTerrainCache implements IWorldEventListener, IResourceM
     }
 
     /** A missing/incomplete section is explicit, never returned as proved empty terrain. */
+    public Section currentSection(Key key) {
+        requireClientThread();
+        Cached cached = sections.get(key);
+        return cached != null && isCurrent(cached.section) ? cached.section : null;
+    }
+
     public Section section(Key key) {
         requireClientThread();
         if (key.y < 0 || key.y > 15) return empty(key, Availability.READY);

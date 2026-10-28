@@ -20,7 +20,7 @@ import org.joml.Matrix4f;
 /** Renders actual world and frozen player triangles into separate owned light-space depth targets. */
 public final class ShadowLightDepthPass implements AutoCloseable {
     public enum Availability { RENDERED, INCOMPLETE_WORLD_COVERAGE, DYNAMIC_WORLD_MODEL_UNAVAILABLE,
-        TRANSLUCENT_WORLD_UNAVAILABLE, NO_CASTER_GEOMETRY, NO_SCENE_DEPTH, UNSUPPORTED_RECEIVER_DEPTH }
+        TRANSLUCENT_WORLD_UNAVAILABLE, NO_CASTER_GEOMETRY, NO_AXIAL_DISC, NO_SCENE_DEPTH, UNSUPPORTED_RECEIVER_DEPTH }
     public record Result(Availability availability, String detail, Sample sample) {}
     private ShadowProgram program;
     private Target world, player, receiver;
@@ -63,6 +63,30 @@ public final class ShadowLightDepthPass implements AutoCloseable {
     /** No map is published unless the whole light frustum has real loaded terrain coverage and both draws succeed. */
     public Result render(ShadowLightView view, List<ShadowTerrainCache.Section> sections,
                          PlayerShadowCapture.Caster caster, int atlasTexture, BlockPos sourceBlock) {
+        return render(view, sections, caster, null, atlasTexture, sourceBlock);
+    }
+
+    /** Separate contact-disc path; it cannot serve as a fallback for missing real model geometry. */
+    public Result renderDisc(List<ShadowTerrainCache.Section> sections, PlayerShadowCapture.Subject subject,
+                             int atlasTexture, float maxDrop) {
+        if (closed) throw new IllegalStateException("Light depth pass is closed");
+        var frame = TerrainSceneFrame.current();
+        if (frame == null || frame.availability() != TerrainSceneFrame.Availability.READY)
+            throw new IllegalStateException("Axial disc requires the current terrain frame");
+        if (PlayerShadowCapture.currentSubjects().stream().noneMatch(value -> value == subject))
+            throw new IllegalArgumentException("Disc subject is not from the current accepted frame");
+        var origin = frame.projection();
+        var disc = AxialShadowDisc.from(frame.shadowMode(), subject.pose(),
+                origin.originX, origin.originY, origin.originZ, maxDrop);
+        if (disc == null) {
+            current = null; generation = Math.incrementExact(generation);
+            return new Result(Availability.NO_AXIAL_DISC, "Free, unspecified or real-projection mode has no axial disc", null);
+        }
+        return render(disc.occlusionView(), sections, null, disc, atlasTexture, null);
+    }
+
+    private Result render(ShadowLightView view, List<ShadowTerrainCache.Section> sections,
+                          PlayerShadowCapture.Caster caster, AxialShadowDisc disc, int atlasTexture, BlockPos sourceBlock) {
         if (closed) throw new IllegalStateException("Light depth pass is closed");
         var frame = TerrainSceneFrame.current();
         if (frame == null || frame.availability() != TerrainSceneFrame.Availability.READY)
@@ -73,9 +97,9 @@ public final class ShadowLightDepthPass implements AutoCloseable {
         if (scene.depthFunction != GL11.GL_LESS && scene.depthFunction != GL11.GL_LEQUAL
                 && scene.depthFunction != GL11.GL_GREATER && scene.depthFunction != GL11.GL_GEQUAL)
             return new Result(Availability.UNSUPPORTED_RECEIVER_DEPTH, "Unsupported receiver depth comparison=" + scene.depthFunction, null);
-        if (caster == null || caster.availability() != PlayerShadowCapture.Availability.READY)
+        if (disc == null && (caster == null || caster.availability() != PlayerShadowCapture.Availability.READY))
             return new Result(Availability.NO_CASTER_GEOMETRY, "No verified frozen player triangles", null);
-        if (PlayerShadowCapture.currentCasters().stream().noneMatch(value -> value == caster))
+        if (disc == null && PlayerShadowCapture.currentCasters().stream().noneMatch(value -> value == caster))
             throw new IllegalStateException("Player mesh is not from the current body-render frame");
         String unavailable = coverage(view, frame.projection(), sections);
         if (unavailable != null) return new Result(Availability.INCOMPLETE_WORLD_COVERAGE, unavailable, null);
@@ -116,7 +140,7 @@ public final class ShadowLightDepthPass implements AutoCloseable {
             GL11.glClear(GL11.GL_DEPTH_BUFFER_BIT);
             program.integer("playerGeometry", 1); program.integer("ignoreSourceBlock", 0);
             program.vector("sectionOffset", 0, 0, 0);
-            for (var part : caster.parts()) {
+            for (var part : caster == null ? List.<ShadowCasterMesh.Part>of() : caster.parts()) {
                 var material = part.material;
                 GL11.glBindTexture(GL11.GL_TEXTURE_2D, material.texture());
                 program.integer("textured", material.textured() ? 1 : 0);
@@ -124,7 +148,8 @@ public final class ShadowLightDepthPass implements AutoCloseable {
                 program.scalar("alphaReference", material.alphaReference());
                 draw(part.vertices(), part.vertexCount());
             }
-            ShadowGlDiagnostics.check("draw actual light-space frozen player frame=" + frame.id() + " player=" + caster.playerId());
+            ShadowGlDiagnostics.check("draw light-space player frame=" + frame.id() + " subject="
+                    + (caster == null ? "AXIAL_DISC_NO_MODEL_SUBSTITUTE" : caster.playerId()));
             // A light-map PCF neighbour cannot establish the visible pixel's material identity.
             // Rasterize the actual receiver materials at the scene's own pixel resolution instead.
             if (receiver == null || receiverWidth != scene.width || receiverHeight != scene.height) {
@@ -150,8 +175,9 @@ public final class ShadowLightDepthPass implements AutoCloseable {
             ShadowGlDiagnostics.check("draw same-pixel receiver material qualification frame=" + frame.id());
         }
         // Scope close checks restoration too; old or partially drawn targets cannot acquire a fresh lease.
-        current = new Sample(this, generation, frame, view, receiverClear(scene));
-        return new Result(Availability.RENDERED, "World and player light depths rendered", current);
+        current = new Sample(this, generation, frame, view, receiverClear(scene), disc);
+        return new Result(Availability.RENDERED, disc == null ? "World and player light depths rendered"
+                : "Axial contact receiver occlusion rendered", current);
     }
 
     private static float receiverClear(TerrainDepthSnapshot.Sample scene) {
@@ -222,9 +248,12 @@ public final class ShadowLightDepthPass implements AutoCloseable {
         private final TerrainSceneFrame.WorldScope frame;
         public final ShadowLightView view;
         private final float receiverClear;
-        private Sample(ShadowLightDepthPass owner, long generation, TerrainSceneFrame.WorldScope frame, ShadowLightView view, float receiverClear) {
+        private final AxialShadowDisc disc;
+        private Sample(ShadowLightDepthPass owner, long generation, TerrainSceneFrame.WorldScope frame, ShadowLightView view,
+                       float receiverClear, AxialShadowDisc disc) {
             this.owner = owner; this.generation = generation; this.frame = frame; this.view = view;
             this.receiverClear = receiverClear;
+            this.disc = disc;
         }
         private void live() {
             if (owner.closed || owner.current != this || owner.generation != generation || TerrainSceneFrame.current() != frame
@@ -240,6 +269,7 @@ public final class ShadowLightDepthPass implements AutoCloseable {
         public int receiverWidth() { live(); return owner.receiverWidth; }
         public int receiverHeight() { live(); return owner.receiverHeight; }
         public float receiverClearDepth() { live(); return receiverClear; }
+        public AxialShadowDisc axialDisc() { live(); return disc; }
     }
 
     @Override public void close() {

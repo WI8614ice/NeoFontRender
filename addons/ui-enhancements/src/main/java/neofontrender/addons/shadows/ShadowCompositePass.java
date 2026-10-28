@@ -134,6 +134,12 @@ public final class ShadowCompositePass implements AutoCloseable {
                 maskProgram.scalar("receiverRadius", region.radius);
                 maskProgram.scalar("strength", strength);
                 maskProgram.scalar("mapResolution", light.resolution());
+                var disc = light.axialDisc();
+                maskProgram.integer("axialDisc", disc == null ? 0 : 1);
+                maskProgram.vector("discAnchor", disc == null ? 0 : disc.x(), disc == null ? 0 : disc.y(), disc == null ? 0 : disc.z());
+                maskProgram.vector("discAxis", disc == null ? 0 : disc.upX(), disc == null ? 1 : disc.upY(), disc == null ? 0 : disc.upZ());
+                maskProgram.scalar("discRadius", disc == null ? 1 : disc.radius());
+                maskProgram.scalar("discMaxDrop", disc == null ? 1 : disc.maxDrop());
                 GL11.glDrawArrays(GL11.GL_TRIANGLES, 0, 3);
                 ShadowGlDiagnostics.check("accumulate bounded real player shadow frame=" + frame.id());
             }
@@ -176,6 +182,11 @@ public final class ShadowCompositePass implements AutoCloseable {
 
     private static void bind(ShadowProgram program, String uniform, int unit, int texture) {
         GL13.glActiveTexture(GL13.GL_TEXTURE0 + unit); GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture); program.integer(uniform, unit);
+    }
+
+    public static boolean visible(TerrainDepthSnapshot.Sample sample, Region region) {
+        int[] rect = rectangle(sample, region);
+        return rect[2] != 0 && rect[3] != 0;
     }
 
     private static int[] rectangle(TerrainDepthSnapshot.Sample sample, Region region) {

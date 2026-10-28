@@ -21,6 +21,11 @@ uniform vec3 receiverCenter;
 uniform float receiverRadius;
 uniform float strength;
 uniform float mapResolution;
+uniform int axialDisc;
+uniform vec3 discAnchor;
+uniform vec3 discAxis;
+uniform float discRadius;
+uniform float discMaxDrop;
 out float shadowMask;
 vec3 lightPoint(vec2 uv, float depth) {
     vec4 point = inverseLightProjectionView * vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
@@ -56,6 +61,14 @@ void main() {
     vec3 toLight = directional != 0 ? lightVector : normalize(lightVector - receiver);
     float facing = dot(normal, toLight);
     if (facing <= 0.0) discard; // direct-light occlusion must not re-darken an already unlit face
+    float discOpacity = 1.0;
+    if (axialDisc != 0) {
+        vec3 offset = receiver - discAnchor;
+        float drop = -dot(offset, discAxis);
+        float radial = length(offset + discAxis * drop) / discRadius;
+        if (drop < -0.003 || drop > discMaxDrop || radial >= 1.0) discard;
+        discOpacity = (1.0 - smoothstep(0.3, 1.0, radial)) * (1.0 - max(0.0, drop) / discMaxDrop);
+    }
     vec4 lightClip = lightProjectionView * vec4(receiver, 1.0);
     if (lightClip.w <= 0.0) discard;
     vec3 lightCoordinate = lightClip.xyz / lightClip.w * 0.5 + 0.5;
@@ -67,7 +80,7 @@ void main() {
         if (any(lessThan(tap, vec2(0.0))) || any(greaterThan(tap, vec2(1.0)))) continue;
         float wd = texture(worldDepth, tap).r;
         float pd = texture(playerDepth, tap).r;
-        if (wd >= 1.0 || pd >= 1.0 || texture(sourceEmission, tap).r > 0.0) continue;
+        if (wd >= 1.0 || (axialDisc == 0 && pd >= 1.0) || texture(sourceEmission, tap).r > 0.0) continue;
         vec3 nearPoint = lightPoint(tap, 0.0);
         vec3 ray = lightPoint(tap, 1.0) - nearPoint;
         float denominator = dot(normal, ray);
@@ -79,8 +92,11 @@ void main() {
         // Scene depth alone cannot supply this light-path proof.
         vec3 worldHit = lightPoint(tap, wd);
         if (distance(worldHit, planeReceiver) > 0.003) continue;
-        vec3 playerHit = lightPoint(tap, pd);
-        if (dot(planeReceiver - playerHit, normalize(ray)) > 0.003) shadow += 0.25;
+        if (axialDisc != 0) shadow += 0.25;
+        else {
+            vec3 playerHit = lightPoint(tap, pd);
+            if (dot(planeReceiver - playerHit, normalize(ray)) > 0.003) shadow += 0.25;
+        }
     }
-    shadowMask = shadow * min(0.35, 0.35 * strength) * facing;
+    shadowMask = shadow * min(0.35, 0.35 * strength) * facing * discOpacity;
 }

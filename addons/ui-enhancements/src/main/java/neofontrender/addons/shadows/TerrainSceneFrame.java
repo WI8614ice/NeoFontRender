@@ -3,6 +3,7 @@ package neofontrender.addons.shadows;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.Objects;
+import neofontrender.addons.api.flight.PlayerShadowMode;
 import org.joml.Matrix4f;
 import org.joml.Vector4f;
 
@@ -55,6 +56,7 @@ public final class TerrainSceneFrame {
     public static final class WorldScope implements AutoCloseable {
         private final long id;
         private final float partialTicks;
+        private final PlayerShadowMode shadowMode;
         private Availability state;
         private Projection projection;
         private TerrainScope terrain;
@@ -63,11 +65,14 @@ public final class TerrainSceneFrame {
         private WorldScope(long id, float partialTicks, Availability state) {
             this.id = id;
             this.partialTicks = partialTicks;
+            this.shadowMode = PlayerShadowConfig.mode();
             this.state = state;
         }
 
         public long id() { requireLive(); return id; }
         public float partialTicks() { requireLive(); return partialTicks; }
+        /** A live setting change takes effect on the next world pass, never halfway through one. */
+        public PlayerShadowMode shadowMode() { requireLive(); return shadowMode; }
         public Availability availability() { requireLive(); return state; }
         public Projection projection() {
             requireLive();
