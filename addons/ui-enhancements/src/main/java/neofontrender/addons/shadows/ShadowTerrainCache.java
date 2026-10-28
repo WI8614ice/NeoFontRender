@@ -32,6 +32,7 @@ public final class ShadowTerrainCache implements IWorldEventListener, IResourceM
     // A CPU cache capacity, not a per-movement/query budget; eviction only causes a later rebuild.
     private static final long MAX_BYTES = 32L * 1024 * 1024;
     private static final int MAX_SECTIONS = 128;
+    static int sectionCapacity() { return MAX_SECTIONS; }
     public enum Availability { READY, CHUNK_NOT_LOADED, MISSING_MODEL_NEIGHBOUR }
     public record Key(int x, int y, int z) {
         public BlockPos origin() { return new BlockPos(x << 4, y << 4, z << 4); }

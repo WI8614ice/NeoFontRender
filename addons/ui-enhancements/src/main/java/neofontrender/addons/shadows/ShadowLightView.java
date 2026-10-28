@@ -44,6 +44,16 @@ public final class ShadowLightView {
                 .mul(new Matrix4f().lookAt(eye, center, up(direction))), false, eye);
     }
 
+    /** Near point sources need six real faces; a single cone cannot cover receivers surrounding the source. */
+    public static ShadowLightView pointFace(float lx, float ly, float lz, int axis, int sign, float far) {
+        if (axis < 0 || axis > 2 || Math.abs(sign) != 1 || !Float.isFinite(far) || far <= .01F)
+            throw new IllegalArgumentException("Point-light cube face and positive extent required");
+        Vector3f eye = point(lx, ly, lz);
+        Vector3f direction = new Vector3f(axis == 0 ? sign : 0, axis == 1 ? sign : 0, axis == 2 ? sign : 0);
+        return new ShadowLightView(new Matrix4f().perspective((float) (Math.PI / 2), 1, .01F, far)
+                .mul(new Matrix4f().lookAt(eye, new Vector3f(eye).add(direction), up(direction))), false, eye);
+    }
+
     private static Vector3f direction(float x, float y, float z) {
         Vector3f vector = point(x, y, z);
         if (Math.abs(vector.lengthSquared() - 1) > 1.0E-5) throw new IllegalArgumentException("Unit light direction required");

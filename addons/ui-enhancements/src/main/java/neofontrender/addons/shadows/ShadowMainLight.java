@@ -91,6 +91,18 @@ public final class ShadowMainLight {
         private long selectedAt;
         private long lastTick = Long.MIN_VALUE;
         private Object world;
+        private int probeCursor;
+
+        public Id selectedId() { return selected; }
+
+        /** Re-prove the held source and rotate the second slot; a blocked high score cannot starve exploration. */
+        public List<Candidate> probes(List<Candidate> ranked) {
+            if (ranked.isEmpty()) return List.of();
+            Candidate anchor = ranked.stream().filter(c -> c.id.equals(selected)).findFirst().orElse(ranked.getFirst());
+            var others = ranked.stream().filter(c -> !c.id.equals(anchor.id)).toList();
+            if (others.isEmpty()) return List.of(anchor);
+            return List.of(anchor, others.get(Math.floorMod(probeCursor++, others.size())));
+        }
 
         public Candidate choose(Object currentWorld, long tick, List<Evaluated> evaluated) {
             Objects.requireNonNull(currentWorld, "world");

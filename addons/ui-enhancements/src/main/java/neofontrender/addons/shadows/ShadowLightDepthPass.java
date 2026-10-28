@@ -63,7 +63,13 @@ public final class ShadowLightDepthPass implements AutoCloseable {
     /** No map is published unless the whole light frustum has real loaded terrain coverage and both draws succeed. */
     public Result render(ShadowLightView view, List<ShadowTerrainCache.Section> sections,
                          PlayerShadowCapture.Caster caster, int atlasTexture, BlockPos sourceBlock) {
-        return render(view, sections, caster, null, atlasTexture, sourceBlock);
+        return render(view, sections, caster, null, atlasTexture, sourceBlock, true);
+    }
+
+    /** Visibility selection does not need the full-resolution camera material pass. */
+    public Result probe(ShadowLightView view, List<ShadowTerrainCache.Section> sections,
+                        PlayerShadowCapture.Caster caster, int atlasTexture, BlockPos sourceBlock) {
+        return render(view, sections, caster, null, atlasTexture, sourceBlock, false);
     }
 
     /** Separate contact-disc path; it cannot serve as a fallback for missing real model geometry. */
@@ -82,11 +88,12 @@ public final class ShadowLightDepthPass implements AutoCloseable {
             current = null; generation = Math.incrementExact(generation);
             return new Result(Availability.NO_AXIAL_DISC, "Free, unspecified or real-projection mode has no axial disc", null);
         }
-        return render(disc.occlusionView(), sections, null, disc, atlasTexture, null);
+        return render(disc.occlusionView(), sections, null, disc, atlasTexture, null, true);
     }
 
     private Result render(ShadowLightView view, List<ShadowTerrainCache.Section> sections,
-                          PlayerShadowCapture.Caster caster, AxialShadowDisc disc, int atlasTexture, BlockPos sourceBlock) {
+                          PlayerShadowCapture.Caster caster, AxialShadowDisc disc, int atlasTexture, BlockPos sourceBlock,
+                          boolean qualifyReceiver) {
         if (closed) throw new IllegalStateException("Light depth pass is closed");
         var frame = TerrainSceneFrame.current();
         if (frame == null || frame.availability() != TerrainSceneFrame.Availability.READY)
@@ -152,30 +159,32 @@ public final class ShadowLightDepthPass implements AutoCloseable {
                     + (caster == null ? "AXIAL_DISC_NO_MODEL_SUBSTITUTE" : caster.playerId()));
             // A light-map PCF neighbour cannot establish the visible pixel's material identity.
             // Rasterize the actual receiver materials at the scene's own pixel resolution instead.
-            if (receiver == null || receiverWidth != scene.width || receiverHeight != scene.height) {
-                Target replacement = Target.create(scene.width, scene.height, true);
-                if (receiver != null) receiver.close();
-                receiver = replacement; receiverWidth = scene.width; receiverHeight = scene.height;
+            if (qualifyReceiver) {
+                if (receiver == null || receiverWidth != scene.width || receiverHeight != scene.height) {
+                    Target replacement = Target.create(scene.width, scene.height, true);
+                    if (receiver != null) receiver.close();
+                    receiver = replacement; receiverWidth = scene.width; receiverHeight = scene.height;
+                }
+                GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, receiver.framebuffer);
+                GL11.glViewport(0, 0, scene.width, scene.height);
+                GL11.glClearDepth(receiverClear(scene));
+                int function = scene.mapping.near() < scene.mapping.far() ? scene.depthFunction : switch (scene.depthFunction) {
+                    case GL11.GL_LESS -> GL11.GL_GREATER;
+                    case GL11.GL_LEQUAL -> GL11.GL_GEQUAL;
+                    case GL11.GL_GREATER -> GL11.GL_LESS;
+                    case GL11.GL_GEQUAL -> GL11.GL_LEQUAL;
+                    default -> throw new IllegalStateException("Unsupported receiver comparison");
+                };
+                GL11.glDepthFunc(function);
+                GL11.glClear(GL11.GL_DEPTH_BUFFER_BIT | GL11.GL_COLOR_BUFFER_BIT);
+                float[] cameraView = new Matrix4f().set(origin.inverseProjectionView()).invert().get(new float[16]);
+                program.matrix("lightProjectionView", scene.mapping.conventionalProjection(cameraView));
+                drawTerrain(sections, origin, atlasTexture, null);
+                ShadowGlDiagnostics.check("draw same-pixel receiver material qualification frame=" + frame.id());
             }
-            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, receiver.framebuffer);
-            GL11.glViewport(0, 0, scene.width, scene.height);
-            GL11.glClearDepth(receiverClear(scene));
-            int function = scene.mapping.near() < scene.mapping.far() ? scene.depthFunction : switch (scene.depthFunction) {
-                case GL11.GL_LESS -> GL11.GL_GREATER;
-                case GL11.GL_LEQUAL -> GL11.GL_GEQUAL;
-                case GL11.GL_GREATER -> GL11.GL_LESS;
-                case GL11.GL_GEQUAL -> GL11.GL_LEQUAL;
-                default -> throw new IllegalStateException("Unsupported receiver comparison");
-            };
-            GL11.glDepthFunc(function);
-            GL11.glClear(GL11.GL_DEPTH_BUFFER_BIT | GL11.GL_COLOR_BUFFER_BIT);
-            float[] cameraView = new Matrix4f().set(origin.inverseProjectionView()).invert().get(new float[16]);
-            program.matrix("lightProjectionView", scene.mapping.conventionalProjection(cameraView));
-            drawTerrain(sections, origin, atlasTexture, null);
-            ShadowGlDiagnostics.check("draw same-pixel receiver material qualification frame=" + frame.id());
         }
         // Scope close checks restoration too; old or partially drawn targets cannot acquire a fresh lease.
-        current = new Sample(this, generation, frame, view, receiverClear(scene), disc);
+        current = new Sample(this, generation, frame, view, receiverClear(scene), disc, qualifyReceiver);
         return new Result(Availability.RENDERED, disc == null ? "World and player light depths rendered"
                 : "Axial contact receiver occlusion rendered", current);
     }
@@ -213,33 +222,17 @@ public final class ShadowLightDepthPass implements AutoCloseable {
     /** Dense conservative frustum AABB: missing chunks/sections never become empty occluders. */
     private static String coverage(ShadowLightView view, TerrainSceneFrame.Projection origin,
                                     List<ShadowTerrainCache.Section> sections) {
-        double[] min = {Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY};
-        double[] max = {Double.NEGATIVE_INFINITY, Double.NEGATIVE_INFINITY, Double.NEGATIVE_INFINITY};
-        for (float[] point : view.corners()) for (int axis = 0; axis < 3; axis++) {
-            double coordinate = point[axis] + (axis == 0 ? origin.originX : axis == 1 ? origin.originY : origin.originZ);
-            min[axis] = Math.min(min[axis], coordinate); max[axis] = Math.max(max[axis], coordinate);
-        }
-        int x0 = floorSection(min[0]), x1 = floorSection(max[0]), z0 = floorSection(min[2]), z1 = floorSection(max[2]);
-        int y0 = Math.max(0, floorSection(min[1])), y1 = Math.min(15, floorSection(max[1]));
-        long required = Math.multiplyExact(Math.multiplyExact((long) x1 - x0 + 1, (long) z1 - z0 + 1), Math.max(0, y1 - y0 + 1));
+        var required = ShadowLightCoverage.required(view, origin);
+        if (required.unavailable() != null) return required.unavailable();
         var byKey = new HashMap<ShadowTerrainCache.Key, ShadowTerrainCache.Section>();
         for (var section : sections) if (byKey.put(section.key(), section) != null)
             throw new IllegalArgumentException("Duplicate terrain section in light coverage: " + section.key());
-        if (byKey.size() < required) return "Light frustum needs " + required + " section identities; supplied " + byKey.size();
-        for (int y = y0; y <= y1; y++) for (int z = z0; z <= z1; z++) for (int x = x0; x <= x1; x++) {
-            var key = new ShadowTerrainCache.Key(x, y, z);
+        for (var key : required.keys()) {
             var section = byKey.get(key);
             if (section == null || section.availability() != ShadowTerrainCache.Availability.READY)
                 return "Light path has missing/unavailable terrain section " + key;
         }
         return null;
-    }
-
-    private static int floorSection(double coordinate) {
-        double value = Math.floor(coordinate / 16);
-        if (!Double.isFinite(value) || value < Integer.MIN_VALUE || value >= Integer.MAX_VALUE)
-            throw new IllegalArgumentException("Finite representable light section required");
-        return (int) value;
     }
 
     public static final class Sample {
@@ -249,11 +242,13 @@ public final class ShadowLightDepthPass implements AutoCloseable {
         public final ShadowLightView view;
         private final float receiverClear;
         private final AxialShadowDisc disc;
+        private final boolean qualified;
         private Sample(ShadowLightDepthPass owner, long generation, TerrainSceneFrame.WorldScope frame, ShadowLightView view,
-                       float receiverClear, AxialShadowDisc disc) {
+                       float receiverClear, AxialShadowDisc disc, boolean qualified) {
             this.owner = owner; this.generation = generation; this.frame = frame; this.view = view;
             this.receiverClear = receiverClear;
             this.disc = disc;
+            this.qualified = qualified;
         }
         private void live() {
             if (owner.closed || owner.current != this || owner.generation != generation || TerrainSceneFrame.current() != frame
@@ -264,10 +259,14 @@ public final class ShadowLightDepthPass implements AutoCloseable {
         public int playerDepth() { live(); return owner.player.depth; }
         public int emission() { live(); return owner.world.emission; }
         public int resolution() { live(); return owner.resolution; }
-        public int receiverDepth() { live(); return owner.receiver.depth; }
-        public int receiverEmission() { live(); return owner.receiver.emission; }
-        public int receiverWidth() { live(); return owner.receiverWidth; }
-        public int receiverHeight() { live(); return owner.receiverHeight; }
+        private void requireQualified() {
+            live();
+            if (!qualified) throw new IllegalStateException("Visibility-only light sample cannot qualify a camera receiver");
+        }
+        public int receiverDepth() { requireQualified(); return owner.receiver.depth; }
+        public int receiverEmission() { requireQualified(); return owner.receiver.emission; }
+        public int receiverWidth() { requireQualified(); return owner.receiverWidth; }
+        public int receiverHeight() { requireQualified(); return owner.receiverHeight; }
         public float receiverClearDepth() { live(); return receiverClear; }
         public AxialShadowDisc axialDisc() { live(); return disc; }
     }

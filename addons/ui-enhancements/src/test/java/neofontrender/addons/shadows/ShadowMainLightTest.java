@@ -48,4 +48,22 @@ class ShadowMainLightTest {
             assertEquals(strength < .5 ? a : b, select.choose(world, 8, List.of(visible(a), visible(b))));
         }
     }
+
+    @Test void blockedBestAndHeldWeakSourceCannotPermanentlyStarveAVisibleStrongerSource() {
+        Object world = new Object();
+        var select = new ShadowMainLight.Selection();
+        var blocked = block(1, 1); var held = block(2, .2); var stronger = block(3, .8);
+        assertEquals(held, select.choose(world, 0, List.of(visible(held))));
+        boolean reachedStronger = false;
+        for (int round = 0; round < 3; round++) {
+            var probes = select.probes(List.of(blocked, stronger, held));
+            assertTrue(probes.size() <= 2);
+            if (!reachedStronger) assertTrue(probes.contains(held), "held source still needs current proof");
+            var evaluated = probes.stream().map(light -> new ShadowMainLight.Evaluated(light,
+                    light == blocked ? ShadowMainLight.Visibility.OCCLUDED : ShadowMainLight.Visibility.VISIBLE)).toList();
+            var selected = select.choose(world, 10 + round, evaluated);
+            reachedStronger |= selected == stronger;
+        }
+        assertTrue(reachedStronger);
+    }
 }
