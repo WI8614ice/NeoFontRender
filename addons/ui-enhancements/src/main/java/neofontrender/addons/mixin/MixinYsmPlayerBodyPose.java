@@ -22,6 +22,7 @@ import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Coerce;
+import neofontrender.addons.shadows.PlayerShadowCapture;
 
 /** Optional YSM 1.1.9 root/head bridge. No YSM types are linked from UIE bytecode. */
 @Pseudo
@@ -36,6 +37,7 @@ abstract class MixinYsmPlayerBodyPose {
                                                   double x, double y, double z,
                                                   float entityYaw, float partialTicks,
                                                   Operation<Void> original) throws Throwable {
+        PlayerShadowCapture.nativeModelUnavailable(entity);
         PlayerBodyRenderScope.withSampledPose(entity, () -> {
             if (!(entity instanceof AbstractClientPlayer player)
                     || !nfrUi$mayOwnRoot(player)) return null;

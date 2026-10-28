@@ -5,6 +5,7 @@ import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import net.irisshaders.iris.api.v0.IrisApi;
 import net.minecraft.client.renderer.EntityRenderer;
 import neofontrender.addons.shadows.TerrainSceneFrame;
+import neofontrender.addons.shadows.PlayerShadowCapture;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -18,9 +19,10 @@ public abstract class MixinActiniumWorldShadowFrame {
     private void nfrUi$worldFrame(int pass, float partialTicks, long finishTime,
                                   Operation<Void> original) throws Throwable {
         var iris = IrisApi.getInstance();
-        try (var ignored = TerrainSceneFrame.beginWorld(partialTicks,
+        try (var frame = TerrainSceneFrame.beginWorld(partialTicks,
                 iris.isShaderPackInUse() || iris.isRenderingShadowPass())) {
-            original.call(pass, partialTicks, finishTime);
+            try { original.call(pass, partialTicks, finishTime); }
+            finally { PlayerShadowCapture.endWorld(frame); }
         }
     }
 

@@ -136,12 +136,19 @@ public final class TerrainSceneFrame {
                     && projection.equals(other.projection) && modelView.equals(other.modelView);
         }
         public float[] inverseProjectionView() { return inverse.get(new float[16]); }
+        public float[] inverseModelView() { return new Matrix4f(modelView).invert().get(new float[16]); }
 
         /** Standard GL window-depth reconstruction; coordinates returned relative to the actual terrain origin. */
         public float[] relativePoint(float u, float v, float depth) {
             if (!Float.isFinite(u) || !Float.isFinite(v) || !Float.isFinite(depth))
                 throw new IllegalArgumentException("finite window sample required");
-            Vector4f point = inverse.transform(new Vector4f(2 * u - 1, 2 * v - 1, 2 * depth - 1, 1));
+            return relativeClipPoint(2 * u - 1, 2 * v - 1, 2 * depth - 1);
+        }
+
+        public float[] relativeClipPoint(float x, float y, float z) {
+            if (!Float.isFinite(x) || !Float.isFinite(y) || !Float.isFinite(z))
+                throw new IllegalArgumentException("finite clip sample required");
+            Vector4f point = inverse.transform(new Vector4f(x, y, z, 1));
             if (!Float.isFinite(point.w) || point.w == 0)
                 throw new IllegalArgumentException("point lies at projection infinity");
             return new float[] {point.x / point.w, point.y / point.w, point.z / point.w};

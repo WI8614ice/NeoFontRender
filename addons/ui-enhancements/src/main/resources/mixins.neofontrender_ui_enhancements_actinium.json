@@ -8,6 +8,8 @@
   "mixins": [],
   "server": [],
   "client": [
+    "compat.AccessorModelBoxShadowGeometry",
+    "compat.MixinActiniumModelShadowCapture",
     "compat.MixinActiniumTerrainShadowFrame",
     "compat.MixinActiniumWorldShadowFrame"
   ]

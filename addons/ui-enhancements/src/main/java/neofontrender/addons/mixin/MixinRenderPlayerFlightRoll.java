@@ -15,6 +15,7 @@ import neofontrender.addons.flight.FlightBodyPresentationPolicy;
 import neofontrender.addons.flight.FlightRollRenderState;
 import neofontrender.addons.flight.PlayerBodyRenderScope;
 import neofontrender.addons.flight.PlayerBodyRenderTransform;
+import neofontrender.addons.shadows.PlayerShadowCapture;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
@@ -58,7 +59,8 @@ public abstract class MixinRenderPlayerFlightRoll {
                         nfrUi$restore(player, aligned);
                     }
                 }
-                original.call(player, x, y, z, entityYaw, partialTicks);
+                PlayerShadowCapture.withPlayer(player,
+                        () -> original.call(player, x, y, z, entityYaw, partialTicks));
             });
         } finally {
             nfrUi$restore(player, previous);
