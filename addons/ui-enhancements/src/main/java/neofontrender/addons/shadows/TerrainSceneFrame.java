@@ -142,6 +142,8 @@ public final class TerrainSceneFrame {
         }
         public float[] inverseProjectionView() { return inverse.get(new float[16]); }
         public float[] inverseModelView() { return new Matrix4f(modelView).invert().get(new float[16]); }
+        public float[] projectionMatrix() { return projection.get(new float[16]); }
+        public float[] modelViewMatrix() { return modelView.get(new float[16]); }
 
         /** Standard GL window-depth reconstruction; coordinates returned relative to the actual terrain origin. */
         public float[] relativePoint(float u, float v, float depth) {

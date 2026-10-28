@@ -9,6 +9,8 @@
   "server": [],
   "client": [
     "compat.AccessorModelBoxShadowGeometry",
+    "compat.AccessorPlayerRendererShadowState",
+    "compat.MixinPlayerShadowRenderFailure",
     "compat.MixinActiniumModelShadowCapture",
     "compat.MixinActiniumTerrainShadowFrame",
     "compat.MixinActiniumWorldShadowFrame"

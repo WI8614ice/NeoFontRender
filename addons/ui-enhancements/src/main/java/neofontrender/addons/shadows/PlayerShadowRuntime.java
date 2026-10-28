@@ -22,6 +22,7 @@ public final class PlayerShadowRuntime implements IResourceManagerReloadListener
     private ShadowLightDepthPass depth;
     private ShadowCompositePass composite;
     private ShadowLightVisibility visibility;
+    private PlayerShadowProxy localBody;
     private static final class LightState {
         final ShadowMainLight.Selection selection = new ShadowMainLight.Selection();
     }
@@ -67,6 +68,11 @@ public final class PlayerShadowRuntime implements IResourceManagerReloadListener
                 report("FOREGROUND_DEPTH_UNAVAILABLE " + foreground.availability() + " " + foreground.detail()); return;
             }
             Minecraft mc = Minecraft.getMinecraft();
+            if (frame.shadowMode() == PlayerShadowMode.REAL_PLAYER_PROJECTION && mc.player != null
+                    && !PlayerShadowCapture.hasCurrentCaster(mc.player.getUniqueID())) {
+                if (localBody == null) localBody = PlayerShadowProxy.create();
+                localBody.captureMissing(mc.player);
+            }
             if (mc.player != null) PlayerShadowCapture.includeUnrenderedSubject(mc.player);
             if (depth == null) depth = ShadowLightDepthPass.create(256);
             if (composite == null) composite = ShadowCompositePass.create();
@@ -236,7 +242,11 @@ public final class PlayerShadowRuntime implements IResourceManagerReloadListener
             finally {
                 composite = null;
                 try { if (visibility != null) visibility.close(); }
-                finally { visibility = null; lights.clear(); TerrainDepthSnapshot.release(); }
+                finally {
+                    visibility = null;
+                    try { if (localBody != null) localBody.close(); }
+                    finally { localBody = null; lights.clear(); TerrainDepthSnapshot.release(); }
+                }
             }
         }
     }

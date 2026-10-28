@@ -17,6 +17,7 @@ class PlayerShadowCaptureScopeTest {
                                 // A null model is intentional: this foreign frame must be rejected before
                                 // reading any model field or GL state, even without a nested player fence.
                                 PlayerShadowCapture.modelPart(null, Float.NaN, Float.NaN, false);
+                                PlayerShadowCapture.modelFailed();
                                 assertEquals(TerrainSceneFrame.Availability.NESTED_WORLD_PASS, nested.availability());
                             }
                         }));
@@ -24,9 +25,24 @@ class PlayerShadowCaptureScopeTest {
                 assertEquals(1, result.size());
                 assertEquals(PlayerShadowCapture.Availability.NO_GEOMETRY, result.getFirst().availability());
                 assertTrue(result.getFirst().parts().isEmpty());
+                assertTrue(PlayerShadowCapture.hasCurrentCaster(new UUID(0, 1)), "No geometry is still an attempted body, not permission to animate again");
             } finally { PlayerShadowCapture.endWorld(outer); }
         }
         assertTrue(PlayerShadowCapture.currentCasters().isEmpty());
+        assertFalse(PlayerShadowCapture.hasCurrentCaster(new UUID(0, 1)));
+    }
+
+    @Test void aFailureCaughtInsideTheRendererCannotPublishAHealthyCaster() throws Throwable {
+        try (var frame = readyFrame()) {
+            try {
+                var id = new UUID(0, 4);
+                PlayerShadowCapture.withCapture(frame, new Object(), id, null, PlayerShadowCapture::modelFailed);
+                var caster = PlayerShadowCapture.currentCasters().getFirst();
+                assertEquals(PlayerShadowCapture.Availability.MODEL_RENDER_FAILED, caster.availability());
+                assertTrue(caster.parts().isEmpty());
+                assertTrue(PlayerShadowCapture.hasCurrentCaster(id), "Failed body is not re-rendered by the first-person proxy");
+            } finally { PlayerShadowCapture.endWorld(frame); }
+        }
     }
 
     @Test void failedRenderReleasesItsLeaseAndDoesNotPublishAPartialCaster() throws Throwable {

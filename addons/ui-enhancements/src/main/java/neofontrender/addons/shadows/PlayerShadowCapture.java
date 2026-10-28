@@ -27,7 +27,8 @@ import org.lwjgl.opengl.GL13;
 
 /** Collects geometry during the real body render, after animation/root sampling and before later models mutate it. */
 public final class PlayerShadowCapture {
-    public enum Availability { READY, NO_GEOMETRY, UNSUPPORTED_MODEL_GEOMETRY, NATIVE_MODEL_UNAVAILABLE }
+    public enum Availability { READY, NO_GEOMETRY, UNSUPPORTED_MODEL_GEOMETRY, NATIVE_MODEL_UNAVAILABLE,
+        UNSUPPORTED_PLAYER_RENDERER, MODEL_RENDER_FAILED }
     public record Caster(UUID playerId, FlightBodyPose pose, Availability availability,
                          List<ShadowCasterMesh.Part> parts) {
         public Caster { parts = List.copyOf(parts); }
@@ -132,6 +133,27 @@ public final class PlayerShadowCapture {
 
     public static List<Caster> currentCasters() {
         return frame != null && frame == TerrainSceneFrame.current() ? List.copyOf(CASTERS.values()) : List.of();
+    }
+
+    public static boolean hasCurrentCaster(UUID player) {
+        return frame != null && frame == TerrainSceneFrame.current() && CASTERS.containsKey(player);
+    }
+
+    public static void unsupportedRenderer(AbstractClientPlayer player) {
+        var current = TerrainSceneFrame.current();
+        if (current == null || current.availability() != TerrainSceneFrame.Availability.READY)
+            throw new IllegalStateException("Unavailable renderer needs a current frame");
+        adopt(current);
+        CASTERS.putIfAbsent(player.getUniqueID(), new Caster(player.getUniqueID(), null,
+                Availability.UNSUPPORTED_PLAYER_RENDERER, List.of()));
+    }
+
+    /** RenderLivingBase already logs the original failure; do not publish the triangles drawn before its catch. */
+    public static void modelFailed() {
+        if (frame == null || frame != TerrainSceneFrame.current()
+                || frame.availability() != TerrainSceneFrame.Availability.READY) return;
+        var capture = STACK.peek();
+        if (capture != null && capture.player != null) capture.unavailable = Availability.MODEL_RENDER_FAILED;
     }
 
     public static void endWorld(TerrainSceneFrame.WorldScope closedFrame) {
