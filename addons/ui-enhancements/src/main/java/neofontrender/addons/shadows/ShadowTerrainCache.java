@@ -95,6 +95,17 @@ public final class ShadowTerrainCache implements IWorldEventListener, IResourceM
         return true;
     }
 
+    /** A saved READY object is not authority after eviction, invalidation, reload or world replacement. */
+    public boolean isCurrent(Section section) {
+        requireClientThread();
+        if (world == null || world != Minecraft.getMinecraft().world) return false;
+        Cached cached = sections.get(section.key());
+        if (cached == null || cached.section != section || section.key().y < 0 || section.key().y > 15) return false;
+        Chunk chunk = world.getChunkProvider().getLoadedChunk(section.key().x, section.key().z);
+        return chunk == cached.chunk && chunk != null && chunk.getBlockStorageArray()[section.key().y] == cached.storage
+                && dependenciesLoaded(cached.dependencies);
+    }
+
     private Built build(Key key) {
         var access = new ShadowBlockAccess(world);
         var origin = key.origin();

@@ -59,6 +59,7 @@ public final class TerrainDepthSnapshot {
         GL11.glGetDouble(GL11.GL_DEPTH_RANGE, range);
         double rangeNear = range.get(0), rangeFar = range.get(1);
         double clearDepth = GL11.glGetDouble(GL11.GL_DEPTH_CLEAR_VALUE);
+        int depthFunction = GL11.glGetInteger(GL11.GL_DEPTH_FUNC);
         var capabilities = GL.getCapabilities();
         boolean clipControl = capabilities.OpenGL45 || capabilities.GL_ARB_clip_control;
         boolean zeroToOne = clipControl && GL11.glGetInteger(GL45.GL_CLIP_DEPTH_MODE) == GL45.GL_ZERO_TO_ONE;
@@ -98,7 +99,7 @@ public final class TerrainDepthSnapshot {
                         GL11.GL_DEPTH_BUFFER_BIT, GL11.GL_NEAREST);
                 ShadowGlDiagnostics.check("depth copy; " + copy);
                 captured = new Sample(slot, frame, slot.target.texture, width, height, x, y, rangeNear, rangeFar,
-                        clearDepth, zeroToOne, upperLeft);
+                        clearDepth, zeroToOne, upperLeft, depthFunction);
             }
         } catch (RuntimeException | Error failure) {
             primary = failure;
@@ -188,13 +189,15 @@ public final class TerrainDepthSnapshot {
         private final int texture;
         public final int width, height, viewportX, viewportY;
         public final WindowDepthMapping mapping;
+        public final int depthFunction;
         private Sample(Slot slot, TerrainSceneFrame.WorldScope frame, int texture, int width, int height, int x, int y,
-                       double rangeNear, double rangeFar, double clearDepth, boolean zeroToOne, boolean upperLeft) {
+                       double rangeNear, double rangeFar, double clearDepth, boolean zeroToOne, boolean upperLeft, int depthFunction) {
             this.frame = frame;
             this.slot = slot;
             this.texture = texture;
             this.width = width; this.height = height; viewportX = x; viewportY = y;
             mapping = new WindowDepthMapping(rangeNear, rangeFar, clearDepth, zeroToOne, upperLeft);
+            this.depthFunction = depthFunction;
         }
         public int texture() { requireLive(); return texture; }
         public TerrainSceneFrame.Projection projection() { requireLive(); return frame.projection(); }
