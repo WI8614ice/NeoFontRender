@@ -90,16 +90,15 @@ public final class ChatHeadRenderer {
     private static void renderTexture(ResourceLocation skin, int x, int y, float opacity) {
         Minecraft minecraft = Minecraft.getMinecraft();
 
-        GlStateManager.enableTexture2D();
-        GlStateManager.enableBlend();
-        minecraft.getTextureManager().bindTexture(skin);
-        if (EnhancedChatFeatures.headShadow()) {
-            GlStateManager.color(0.25F, 0.25F, 0.25F, opacity);
-            drawAvatar(skin, x + 1, y + 1);
+        try (ChatAvatarGlState ignored = new ChatAvatarGlState()) {
+            minecraft.getTextureManager().bindTexture(skin);
+            if (EnhancedChatFeatures.headShadow()) {
+                GlStateManager.color(0.25F, 0.25F, 0.25F, opacity);
+                drawAvatar(skin, x + 1, y + 1);
+            }
+            GlStateManager.color(1.0F, 1.0F, 1.0F, opacity);
+            drawAvatar(skin, x, y);
         }
-        GlStateManager.color(1.0F, 1.0F, 1.0F, opacity);
-        drawAvatar(skin, x, y);
-        GlStateManager.color(1.0F, 1.0F, 1.0F, 1.0F);
     }
 
     private static void drawAvatar(ResourceLocation skin, int x, int y) {
