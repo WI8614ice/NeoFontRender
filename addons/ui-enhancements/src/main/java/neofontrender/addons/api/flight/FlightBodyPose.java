@@ -10,6 +10,8 @@ import java.util.Objects;
  * quaternion directly maps an upright player model's local +Y up axis to world space.</p>
  */
 public final class FlightBodyPose {
+    /** Explicit owner-provided pose state; a cardinal-looking quaternion does not establish support. */
+    public enum ShadowReference { UNSPECIFIED, FREE, AXIAL }
     /**
      * LEGACY_AIRCRAFT_FORWARD_Z preserves the original API meaning: local +Z is the
      * aircraft's longitudinal forward axis. MODEL_UP_Y means the quaternion maps a
@@ -28,6 +30,9 @@ public final class FlightBodyPose {
     public final FlightVector rootWorldOffset;
     /** Optional physical display geometry from this exact provider sample; absent for legacy providers. */
     public final FlightBodyGeometry geometry;
+    public final ShadowReference shadowReference;
+    /** Accepted world axis for a constrained body, independent of visual reference interpolation. */
+    public final FlightVector shadowAxisUp;
 
     /** Keeps the API 9 JVM descriptor and aircraft-local +Z interpretation. */
     public FlightBodyPose(FlightAttitude attitude) {
@@ -50,11 +55,19 @@ public final class FlightBodyPose {
 
     private FlightBodyPose(FlightAttitude attitude, Basis basis,
                            FlightAttitude headWorldAttitude, FlightVector rootWorldOffset, FlightBodyGeometry geometry) {
+        this(attitude, basis, headWorldAttitude, rootWorldOffset, geometry, ShadowReference.UNSPECIFIED, null);
+    }
+
+    private FlightBodyPose(FlightAttitude attitude, Basis basis,
+                           FlightAttitude headWorldAttitude, FlightVector rootWorldOffset, FlightBodyGeometry geometry,
+                           ShadowReference shadowReference, FlightVector shadowAxisUp) {
         this.attitude = Objects.requireNonNull(attitude, "attitude");
         this.basis = Objects.requireNonNull(basis, "basis");
         this.headWorldAttitude = headWorldAttitude;
         this.rootWorldOffset = Objects.requireNonNull(rootWorldOffset, "rootWorldOffset");
         this.geometry = geometry;
+        this.shadowReference = shadowReference;
+        this.shadowAxisUp = shadowAxisUp;
     }
 
     /** Creates a pose whose quaternion directly maps the model's local +Y up axis to world space. */
@@ -80,6 +93,23 @@ public final class FlightBodyPose {
     /** Adds sampled capsule/eye to this pose without changing the legacy factory descriptors. */
     public FlightBodyPose withGeometry(FlightBodyGeometry geometry) {
         return new FlightBodyPose(attitude, basis, headWorldAttitude, rootWorldOffset,
-                Objects.requireNonNull(geometry, "geometry"));
+                Objects.requireNonNull(geometry, "geometry"), shadowReference, shadowAxisUp);
+    }
+
+    /** Free pose never emits the axial disc, including while its quaternion happens to be cardinal. */
+    public FlightBodyPose withFreeShadowReference() {
+        return new FlightBodyPose(attitude, basis, headWorldAttitude, rootWorldOffset, geometry,
+                ShadowReference.FREE, null);
+    }
+
+    /** Uses an actual accepted six-axis reference, rather than G intent or a camera-derived axis. */
+    public FlightBodyPose withAxialShadowReference(FlightVector up) {
+        Objects.requireNonNull(up, "up");
+        if (!((Math.abs(up.x) == 1 && up.y == 0 && up.z == 0)
+                || (up.x == 0 && Math.abs(up.y) == 1 && up.z == 0)
+                || (up.x == 0 && up.y == 0 && Math.abs(up.z) == 1)))
+            throw new IllegalArgumentException("Accepted cardinal shadow axis required");
+        return new FlightBodyPose(attitude, basis, headWorldAttitude, rootWorldOffset, geometry,
+                ShadowReference.AXIAL, up);
     }
 }

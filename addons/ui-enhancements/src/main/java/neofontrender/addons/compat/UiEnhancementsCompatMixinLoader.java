@@ -12,6 +12,7 @@ import java.util.List;
  * lives outside the configured Mixin package, whose classes LaunchWrapper is forbidden to load.
  */
 public final class UiEnhancementsCompatMixinLoader implements ILateMixinLoader {
+    static final String ACTINIUM_CONFIG = "mixins.neofontrender_ui_enhancements_actinium.json";
     static final String PREGEN_CONFIG = "mixins.neofontrender_ui_enhancements_pregenerator.json";
     static final String HEI_CONFIG = "mixins.neofontrender_ui_enhancements_hei.json";
     static final String LEGENDARY_TOOLTIPS_CONFIG =
@@ -35,7 +36,7 @@ public final class UiEnhancementsCompatMixinLoader implements ILateMixinLoader {
 
     @Override
     public List<String> getMixinConfigs() {
-        return Arrays.asList(PREGEN_CONFIG, HEI_CONFIG, OBSCURE_TOOLTIPS_CONFIG, LEGENDARY_TOOLTIPS_CONFIG, QUARK_CONFIG,
+        return Arrays.asList(ACTINIUM_CONFIG, PREGEN_CONFIG, HEI_CONFIG, OBSCURE_TOOLTIPS_CONFIG, LEGENDARY_TOOLTIPS_CONFIG, QUARK_CONFIG,
                 SHOULDER_SURFING_CONFIG, SHOULDER_SURFING_TCONSTRUCT_CONFIG,
                 SHOULDER_SURFING_MATTER_OVERDRIVE_CONFIG, BETTER_COMBAT_CONFIG,
                 THAUMCRAFT_CONFIG, CLEANROOM_COMMAND_SUGGESTIONS_CONFIG);
@@ -44,6 +45,12 @@ public final class UiEnhancementsCompatMixinLoader implements ILateMixinLoader {
     @Override
     public boolean shouldMixinConfigQueue(Context context) {
         String config = context.mixinConfig();
+        if (ACTINIUM_CONFIG.equals(config)) {
+            return context.isModPresent("actinium")
+                    && classResourcePresent("com/dhj/actinium/render/terrain/ActiniumWorldRenderer.class")
+                    && classResourcePresent("dhj/embeddedt/embeddium/impl/render/chunk/ChunkRenderMatrices.class")
+                    && classResourcePresent("net/irisshaders/iris/api/v0/IrisApi.class");
+        }
         if (PREGEN_CONFIG.equals(config)) {
             return context.isModPresent("chunkpregenerator")
                     && classResourcePresent("pregenerator/impl/client/ClientHandler.class")

@@ -18,6 +18,7 @@
   "client": [
     "MixinMusicTickerControl",
     "MixinRenderManagerPhysicalLight",
+    "MixinRenderFreePlayerShadow",
     "MixinItemRendererPhysicalOverlay",
     "AccessorAudioChannels",
     "AccessorShaderGroup",

@@ -16,6 +16,7 @@ import neofontrender.addons.api.camera.CameraRigRequest;
 import neofontrender.addons.input.VanillaInputBridge;
 import neofontrender.addons.input.PlayerMovementInputBridge;
 import neofontrender.addons.input.InputCommandEdges;
+import neofontrender.addons.shadows.PlayerShadowConfig;
 import neofontrender.addons.api.input.InputAction;
 import neofontrender.addons.api.input.InputApi;
 import neofontrender.addons.api.input.InputFrame;
@@ -30,6 +31,7 @@ public final class CameraModule implements UiEnhancementModule {
     @Override public void preInit() {
         ShoulderCameraConfig.load();
         PlayerFadeConfig.load();
+        PlayerShadowConfig.load();
         FreeLookConfig.load();
         CursorLookConfig.load();
         DroneCameraConfig.load();
@@ -90,6 +92,7 @@ public final class CameraModule implements UiEnhancementModule {
         }
         if (event.phase != TickEvent.Phase.END) return;
         PlayerFadeConfig.poll();
+        PlayerShadowConfig.poll();
         net.minecraft.client.entity.EntityPlayerSP player =
                 net.minecraft.client.Minecraft.getMinecraft().player;
         if (player == null || !player.isEntityAlive()) {
