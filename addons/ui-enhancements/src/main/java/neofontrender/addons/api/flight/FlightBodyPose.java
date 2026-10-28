@@ -26,6 +26,8 @@ public final class FlightBodyPose {
     public final FlightAttitude headWorldAttitude;
     /** World-axis displacement from interpolated entity transport to the sampled model root. */
     public final FlightVector rootWorldOffset;
+    /** Optional physical display geometry from this exact provider sample; absent for legacy providers. */
+    public final FlightBodyGeometry geometry;
 
     /** Keeps the API 9 JVM descriptor and aircraft-local +Z interpretation. */
     public FlightBodyPose(FlightAttitude attitude) {
@@ -43,10 +45,16 @@ public final class FlightBodyPose {
 
     private FlightBodyPose(FlightAttitude attitude, Basis basis,
                            FlightAttitude headWorldAttitude, FlightVector rootWorldOffset) {
+        this(attitude, basis, headWorldAttitude, rootWorldOffset, null);
+    }
+
+    private FlightBodyPose(FlightAttitude attitude, Basis basis,
+                           FlightAttitude headWorldAttitude, FlightVector rootWorldOffset, FlightBodyGeometry geometry) {
         this.attitude = Objects.requireNonNull(attitude, "attitude");
         this.basis = Objects.requireNonNull(basis, "basis");
         this.headWorldAttitude = headWorldAttitude;
         this.rootWorldOffset = Objects.requireNonNull(rootWorldOffset, "rootWorldOffset");
+        this.geometry = geometry;
     }
 
     /** Creates a pose whose quaternion directly maps the model's local +Y up axis to world space. */
@@ -67,5 +75,11 @@ public final class FlightBodyPose {
                                           FlightVector rootWorldOffset) {
         return new FlightBodyPose(bodyWorldAttitude, Basis.MODEL_UP_Y,
                 Objects.requireNonNull(headWorldAttitude, "headWorldAttitude"), rootWorldOffset);
+    }
+
+    /** Adds sampled capsule/eye to this pose without changing the legacy factory descriptors. */
+    public FlightBodyPose withGeometry(FlightBodyGeometry geometry) {
+        return new FlightBodyPose(attitude, basis, headWorldAttitude, rootWorldOffset,
+                Objects.requireNonNull(geometry, "geometry"));
     }
 }

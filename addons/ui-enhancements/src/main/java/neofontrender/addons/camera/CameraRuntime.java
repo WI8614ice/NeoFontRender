@@ -33,6 +33,8 @@ import neofontrender.addons.compat.CameraExternalCompat;
 import neofontrender.addons.api.input.InputAction;
 import neofontrender.addons.api.input.InputFrame;
 import neofontrender.addons.api.flight.FlightApi;
+import neofontrender.addons.api.flight.FlightBodyPose;
+import neofontrender.addons.api.flight.FlightVector;
 import neofontrender.addons.api.flight.FlightCameraTracking;
 import neofontrender.addons.api.flight.FlightAttitude;
 import neofontrender.addons.mixin.AccessorEntityRendererCameraDistance;
@@ -844,6 +846,11 @@ public final class CameraRuntime {
                 Math.min(Math.min(camera.y - bounds.minY, bounds.maxY - camera.y),
                         Math.min(camera.z - bounds.minZ, bounds.maxZ - camera.z)));
         double signedDistance = outside > 0.0D ? outside : -inside;
+        FlightBodyPose body = FlightApi.queryBodyPose(player, partialTicks);
+        if (body != null && body.geometry != null) {
+            signedDistance = body.geometry.signedDistance(new FlightVector(
+                    camera.x, camera.y, camera.z));
+        }
         PlayerFadeConfig.Settings settings = PlayerFadeConfig.current();
         double start = settings.outsideDistance();
         double depth = settings.insideDepth();

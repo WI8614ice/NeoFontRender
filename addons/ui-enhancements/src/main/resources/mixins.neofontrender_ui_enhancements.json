@@ -17,6 +17,8 @@
   "server": [],
   "client": [
     "MixinMusicTickerControl",
+    "MixinRenderManagerPhysicalLight",
+    "MixinItemRendererPhysicalOverlay",
     "AccessorAudioChannels",
     "AccessorShaderGroup",
     "AccessorEntityRendererCameraDistance",
