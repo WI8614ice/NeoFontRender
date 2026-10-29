@@ -1,6 +1,7 @@
 package neofontrender.addons.shadows;
 
 import java.nio.FloatBuffer;
+import neofontrender.addons.compat.ActiniumShadowCompat;
 import java.util.ArrayList;
 import java.util.List;
 import net.minecraft.client.renderer.GlStateManager;
@@ -129,8 +130,11 @@ final class PlayerModelGlState implements AutoCloseable {
     private record Matrix(int mode, int textureUnit, int depthEnum, int depth, FloatBuffer value) {
         static Matrix push(int mode, int valueEnum, int depthEnum, int maximumEnum) {
             GlStateManager.matrixMode(mode);
-            int depth = GL11.glGetInteger(depthEnum);
-            if (depth >= GL11.glGetInteger(maximumEnum)) throw new IllegalStateException("No player model matrix stack slot mode=" + mode);
+            int depth = stackDepth(depthEnum);
+            int capacity = ActiniumShadowCompat.available()
+                    ? ActiniumShadowCompat.matrixStackCapacity(mode) : GL11.glGetInteger(maximumEnum);
+            if (depth >= capacity) throw new IllegalStateException("No player model matrix stack slot mode="
+                    + mode + " depth=" + depth + " capacity=" + capacity);
             var matrix = new Matrix(mode, GL11.glGetInteger(GL13.GL_ACTIVE_TEXTURE), depthEnum, depth, read(valueEnum, 16));
             GlStateManager.pushMatrix();
             try { ShadowGlDiagnostics.check("push player model matrix mode=" + mode); }
@@ -140,9 +144,13 @@ final class PlayerModelGlState implements AutoCloseable {
             }
             return matrix;
         }
+        private static int stackDepth(int depthEnum) {
+            return ActiniumShadowCompat.available() ? ActiniumShadowCompat.matrixStackDepth()
+                    : GL11.glGetInteger(depthEnum);
+        }
         void restore() {
             GlStateManager.setActiveTexture(textureUnit); GlStateManager.matrixMode(mode);
-            int current = GL11.glGetInteger(depthEnum);
+            int current = stackDepth(depthEnum);
             if (current < depth) throw new IllegalStateException("Player renderer consumed caller matrix stack mode=" + mode);
             while (current-- > depth) GlStateManager.popMatrix();
             GL11.glLoadMatrix(value.duplicate());

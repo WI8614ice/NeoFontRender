@@ -36,4 +36,26 @@ class FlightBodyGeometryTest {
         assertSame(geometry, sampled.geometry);
         assertNull(legacy.geometry);
     }
+    @Test void shortCardinalBoxRetainsExactHeightRatherThanBecomingASphere() {
+        var eye = new FlightVector(4, 5, 6);
+        var box = FlightBodyGeometry.box(new FlightVector(0, 0, 0),
+                new FlightVector(.3, 0, 0), new FlightVector(0, .1, 0), new FlightVector(0, 0, .3), eye);
+        assertEquals(FlightBodyGeometry.Shape.BOX, box.shape);
+        assertSame(eye, box.eye);
+        assertEquals(-.1, box.signedDistance(new FlightVector(0, 0, 0)), 1e-12);
+        assertEquals(0, box.signedDistance(new FlightVector(0, .1, 0)), 1e-12);
+        assertEquals(.05, box.signedDistance(new FlightVector(0, .15, 0)), 1e-12);
+        assertEquals(Math.sqrt(.02), box.signedDistance(new FlightVector(.4, .2, 0)), 1e-12);
+    }
+
+    @Test void referenceRotationAndTranslationPreserveBoxDistance() {
+        double q = Math.sqrt(.5);
+        var box = FlightBodyGeometry.box(new FlightVector(100, 200, 300),
+                new FlightVector(.3 * q, .3 * q, 0), new FlightVector(-.1 * q, .1 * q, 0),
+                new FlightVector(0, 0, .3), new FlightVector(100, 201, 300));
+        assertEquals(.05, box.signedDistance(new FlightVector(100 - .15 * q, 200 + .15 * q, 300)), 1e-12);
+        assertThrows(IllegalArgumentException.class, () -> FlightBodyGeometry.box(new FlightVector(0, 0, 0),
+                new FlightVector(1, 0, 0), new FlightVector(1, 1, 0), new FlightVector(0, 0, 1),
+                new FlightVector(0, 0, 0)));
+    }
 }

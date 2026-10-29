@@ -1,6 +1,7 @@
 package neofontrender.addons.shadows;
 
 import java.nio.IntBuffer;
+import neofontrender.addons.compat.ActiniumShadowCompat;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.GL;
 import org.lwjgl.opengl.GL11;
@@ -23,12 +24,18 @@ final class ShadowGlScope implements AutoCloseable {
     private final IntBuffer drawBuffers;
     private final int readBuffer;
     private boolean closed;
+    private final boolean softwareAttributes;
 
     private ShadowGlScope() {
         ShadowGlDiagnostics.check("before player shadow pass (pre-existing renderer errors)");
-        int stackDepth = GL11.glGetInteger(GL11.GL_ATTRIB_STACK_DEPTH);
-        if (stackDepth >= GL11.glGetInteger(GL11.GL_MAX_ATTRIB_STACK_DEPTH))
-            throw new IllegalStateException("No attribute stack slot for player shadow state scope");
+        softwareAttributes = ActiniumShadowCompat.available();
+        if (!softwareAttributes) {
+            int stackDepth = GL11.glGetInteger(GL11.GL_ATTRIB_STACK_DEPTH);
+            int capacity = GL11.glGetInteger(GL11.GL_MAX_ATTRIB_STACK_DEPTH);
+            if (stackDepth >= capacity)
+                throw new IllegalStateException("No driver attribute stack slot for player shadow state scope: depth="
+                        + stackDepth + " capacity=" + capacity);
+        }
         program = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM);
         vao = GL11.glGetInteger(GL30.GL_VERTEX_ARRAY_BINDING);
         arrayBuffer = GL11.glGetInteger(GL15.GL_ARRAY_BUFFER_BINDING);
@@ -48,10 +55,12 @@ final class ShadowGlScope implements AutoCloseable {
         samplerObjects = GL.getCapabilities().OpenGL33 || GL.getCapabilities().GL_ARB_sampler_objects;
         if (samplerObjects) for (int i = 0; i < samplers.length; i++)
             samplers[i] = GL30.glGetInteger(GL33.GL_SAMPLER_BINDING, i);
-        GL11.glPushAttrib(GL11.GL_ALL_ATTRIB_BITS);
+        if (softwareAttributes) ActiniumShadowCompat.pushAttributes(GL11.GL_ALL_ATTRIB_BITS);
+        else GL11.glPushAttrib(GL11.GL_ALL_ATTRIB_BITS);
         try { ShadowGlDiagnostics.check("capture player shadow GL state"); }
         catch (RuntimeException | Error failure) {
-            if (GL11.glGetInteger(GL11.GL_ATTRIB_STACK_DEPTH) > stackDepth) GL11.glPopAttrib();
+            try { popAttributes(); }
+            catch (RuntimeException | Error cleanup) { failure.addSuppressed(cleanup); }
             throw failure;
         }
     }
@@ -83,6 +92,11 @@ final class ShadowGlScope implements AutoCloseable {
         GL11.glColorMask(true, true, true, true);
     }
 
+    private void popAttributes() {
+        if (softwareAttributes) ActiniumShadowCompat.popAttributes();
+        else GL11.glPopAttrib();
+    }
+
     @Override public void close() {
         if (closed) throw new IllegalStateException("Player shadow GL scope closed twice");
         closed = true;
@@ -94,7 +108,7 @@ final class ShadowGlScope implements AutoCloseable {
         GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, unpackBuffer);
         GL20.glUseProgram(program);
         if (clipControl) GL45.glClipControl(clipOrigin, clipDepth);
-        GL11.glPopAttrib();
+        popAttributes();
         if (drawFramebuffer == 0) GL11.glDrawBuffer(drawBuffers.get(0));
         else GL20.glDrawBuffers(drawBuffers);
         GL11.glReadBuffer(readBuffer);

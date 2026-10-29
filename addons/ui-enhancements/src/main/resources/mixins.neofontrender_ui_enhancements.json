@@ -17,6 +17,7 @@
   "server": [],
   "client": [
     "MixinMusicTickerControl",
+    "MixinDefaultProfileFogDistance",
     "MixinRenderManagerPhysicalLight",
     "MixinRenderFreePlayerShadow",
     "compat.AccessorModelBoxShadowGeometry",
