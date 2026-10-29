@@ -40,8 +40,12 @@ public final class TerrainDepthSnapshot {
         slot.sample = null;
         Minecraft minecraft = Minecraft.getMinecraft();
         if (minecraft.world == null) return new Result(Availability.NO_WORLD, "No client world", null);
+        frame.requireRendererGlHealthy();
+        ShadowGlDiagnostics.check("depth capture entry before resource release or GL queries; frame="
+                + frame.id() + " layer=" + layer);
         if (world != minecraft.world) {
             release();
+            ShadowGlDiagnostics.check("depth capture world resource release; frame=" + frame.id() + " layer=" + layer);
             world = minecraft.world;
         }
         int drawFramebuffer = GL11.glGetInteger(GL30.GL_DRAW_FRAMEBUFFER_BINDING);
@@ -51,7 +55,7 @@ public final class TerrainDepthSnapshot {
         int x = viewport.get(0), y = viewport.get(1), width = viewport.get(2), height = viewport.get(3);
         String context = "frame=" + frame.id() + " layer=" + layer + " source=" + drawFramebuffer
                 + " sourceRect=[" + x + "," + y + "," + width + "," + height + "]";
-        ShadowGlDiagnostics.check("before depth capture (pre-existing renderer errors); " + context);
+        ShadowGlDiagnostics.check("depth capture framebuffer and viewport queries; " + context);
         if (width <= 0 || height <= 0) throw new IllegalStateException("Empty opaque terrain viewport");
         int activeTexture = GL11.glGetInteger(GL13.GL_ACTIVE_TEXTURE);
         boolean scissor = GL11.glIsEnabled(GL11.GL_SCISSOR_TEST);

@@ -37,6 +37,15 @@ public final class PlayerShadowRuntime implements IResourceManagerReloadListener
 
     private PlayerShadowRuntime() {}
 
+    /** Production diagnostics only: preserve a failed frame, without interrupting terrain rendering. */
+    public void observeRendererBoundary(String boundary) {
+        var frame = TerrainSceneFrame.current();
+        if (frame == null || frame.availability() == TerrainSceneFrame.Availability.NESTED_WORLD_PASS
+                || frame.availability() == TerrainSceneFrame.Availability.SHADER_PACK_OWNS_SHADOWS) return;
+        if (failed && world == Minecraft.getMinecraft().world && mode == frame.shadowMode()) return;
+        frame.observeGlBoundary(boundary);
+    }
+
     public void beforeEntities() {
         var frame = TerrainSceneFrame.current();
         if (frame == null) return;
@@ -49,6 +58,7 @@ public final class PlayerShadowRuntime implements IResourceManagerReloadListener
                 finally { world = mc.world; mode = frame.shadowMode(); packOwned = pack; }
             }
             if (failed) return;
+            frame.requireRendererGlHealthy();
             if (frame.availability() != TerrainSceneFrame.Availability.READY) {
                 report("FRAME_UNAVAILABLE " + frame.availability()); return;
             }

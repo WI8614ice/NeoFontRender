@@ -28,6 +28,7 @@ public abstract class MixinActiniumWorldShadowFrame {
         if (TerrainSceneFrame.current() == null) ShadowTerrainCache.INSTANCE.bind(Minecraft.getMinecraft().world);
         try (var frame = TerrainSceneFrame.beginWorld(partialTicks,
                 ActiniumShadowCompat.shaderPackOwnsShadows())) {
+            PlayerShadowRuntime.INSTANCE.observeRendererBoundary("world pass entry; pass=" + pass);
             try { original.call(pass, partialTicks, finishTime); }
             finally { PlayerShadowCapture.endWorld(frame); }
         }
@@ -40,6 +41,7 @@ public abstract class MixinActiniumWorldShadowFrame {
                     ordinal = 0, shift = At.Shift.BEFORE, remap = false)
     }, remap = false, require = 1, expect = 1, allow = 1)
     private void nfrUi$opaqueTerrainComplete(int pass, float partialTicks, long finishTime, CallbackInfo ci) {
+        PlayerShadowRuntime.INSTANCE.observeRendererBoundary("opaque terrain complete before depth setup; pass=" + pass);
         TerrainSceneFrame.opaqueComplete();
         PlayerShadowRuntime.INSTANCE.beforeEntities();
     }

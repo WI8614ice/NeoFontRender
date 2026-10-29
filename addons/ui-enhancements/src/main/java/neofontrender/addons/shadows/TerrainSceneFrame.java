@@ -60,6 +60,8 @@ public final class TerrainSceneFrame {
         private Availability state;
         private Projection projection;
         private TerrainScope terrain;
+        private RuntimeException rendererGlFailure;
+        private String lastCleanGlBoundary = "UNOBSERVED";
         private boolean closed;
 
         private WorldScope(long id, float partialTicks, Availability state) {
@@ -74,6 +76,23 @@ public final class TerrainSceneFrame {
         /** A live setting change takes effect on the next world pass, never halfway through one. */
         public PlayerShadowMode shadowMode() { requireLive(); return shadowMode; }
         public Availability availability() { requireLive(); return state; }
+        void observeGlBoundary(String boundary) {
+            requireLive();
+            if (rendererGlFailure != null) return;
+            try {
+                ShadowGlDiagnostics.check("renderer boundary=" + boundary + "; previousClean="
+                        + lastCleanGlBoundary + "; frame=" + id + "; mode=" + shadowMode);
+                lastCleanGlBoundary = boundary;
+            } catch (RuntimeException failure) {
+                // Retain the first observed GL error until the shadow subsystem boundary handles it.
+                // The terrain renderer still finishes its work; this frame cannot publish valid depth.
+                rendererGlFailure = failure;
+            }
+        }
+        void requireRendererGlHealthy() {
+            requireLive();
+            if (rendererGlFailure != null) throw rendererGlFailure;
+        }
         public Projection projection() {
             requireLive();
             if (state != Availability.READY) throw new IllegalStateException("Terrain projection unavailable: " + state);
