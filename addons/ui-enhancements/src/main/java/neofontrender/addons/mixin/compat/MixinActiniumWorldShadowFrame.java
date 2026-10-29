@@ -2,7 +2,7 @@ package neofontrender.addons.mixin.compat;
 
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
-import net.irisshaders.iris.api.v0.IrisApi;
+import neofontrender.addons.compat.ActiniumShadowCompat;
 import net.minecraft.client.renderer.EntityRenderer;
 import neofontrender.addons.shadows.TerrainSceneFrame;
 import neofontrender.addons.shadows.PlayerShadowCapture;
@@ -21,10 +21,13 @@ public abstract class MixinActiniumWorldShadowFrame {
             remap = false, require = 1, expect = 1, allow = 1)
     private void nfrUi$worldFrame(int pass, float partialTicks, long finishTime,
                                   Operation<Void> original) throws Throwable {
-        var iris = IrisApi.getInstance();
+        if (!ActiniumShadowCompat.available()) {
+            original.call(pass, partialTicks, finishTime);
+            return;
+        }
         if (TerrainSceneFrame.current() == null) ShadowTerrainCache.INSTANCE.bind(Minecraft.getMinecraft().world);
         try (var frame = TerrainSceneFrame.beginWorld(partialTicks,
-                iris.isShaderPackInUse() || iris.isRenderingShadowPass())) {
+                ActiniumShadowCompat.shaderPackOwnsShadows())) {
             try { original.call(pass, partialTicks, finishTime); }
             finally { PlayerShadowCapture.endWorld(frame); }
         }

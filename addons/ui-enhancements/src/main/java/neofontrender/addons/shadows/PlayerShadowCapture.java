@@ -222,6 +222,14 @@ public final class PlayerShadowCapture {
         }
     }
 
+    /** Keeps optional model bindings dormant outside a ready, actual player capture. */
+    public static boolean collectingModel() {
+        var capture = STACK.peek();
+        return frame != null && TerrainSceneFrame.current() == frame
+                && frame.availability() == TerrainSceneFrame.Availability.READY
+                && capture != null && capture.player != null && capture.unavailable == null;
+    }
+
     /** Called before either vanilla or Actinium's batching path consumes this exact part state. */
     public static void modelPart(ModelRenderer model, float geometryScale, float transformScale,
                                  boolean rotationOnly) {

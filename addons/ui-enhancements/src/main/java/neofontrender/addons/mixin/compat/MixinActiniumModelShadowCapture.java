@@ -1,6 +1,6 @@
 package neofontrender.addons.mixin.compat;
 
-import com.dhj.actinium.config.ActiniumRuntimeOptions;
+import neofontrender.addons.compat.ActiniumShadowCompat;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import net.minecraft.client.model.ModelRenderer;
@@ -29,13 +29,15 @@ public abstract class MixinActiniumModelShadowCapture {
 
     @Inject(method = "render(F)V", at = @At("HEAD"), require = 1)
     private void nfrUi$capturePart(float scale, CallbackInfo ci) {
+        if (!PlayerShadowCapture.collectingModel()) return;
         PlayerShadowCapture.modelPart((ModelRenderer) (Object) this,
-                ActiniumRuntimeOptions.useModelRendererBatching() || !compiled ? scale : nfrUi$compiledScale, scale, false);
+                ActiniumShadowCompat.useModelRendererBatching() || !compiled ? scale : nfrUi$compiledScale, scale, false);
     }
 
     @Inject(method = "renderWithRotation(F)V", at = @At("HEAD"), require = 1)
     private void nfrUi$captureRotatedPart(float scale, CallbackInfo ci) {
+        if (!PlayerShadowCapture.collectingModel()) return;
         PlayerShadowCapture.modelPart((ModelRenderer) (Object) this,
-                ActiniumRuntimeOptions.useModelRendererBatching() || !compiled ? scale : nfrUi$compiledScale, scale, true);
+                ActiniumShadowCompat.useModelRendererBatching() || !compiled ? scale : nfrUi$compiledScale, scale, true);
     }
 }

@@ -8,13 +8,6 @@
   "mixins": [],
   "server": [],
   "client": [
-    "compat.AccessorModelBoxShadowGeometry",
-    "compat.AccessorPlayerRendererShadowState",
-    "compat.MixinPlayerShadowRenderFailure",
-    "compat.MixinPlayerShadowSubmittedBuffer",
-    "compat.MixinPlayerShadowItemGeometry",
-    "compat.MixinActiniumModelShadowCapture",
-    "compat.MixinActiniumTerrainShadowFrame",
-    "compat.MixinActiniumWorldShadowFrame"
+    "compat.MixinActiniumTerrainShadowFrame"
   ]
 }
