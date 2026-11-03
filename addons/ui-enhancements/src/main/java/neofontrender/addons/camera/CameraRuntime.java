@@ -168,8 +168,9 @@ public final class CameraRuntime {
                                                               float partialTicks,
                                                               float effectiveEyeHeight) {
         NativeCameraRenderSample sample = nativeCameraRenderSample;
-        if (sample == null || !sample.ownsNativeOrigin()) return;
+        if (sample == null) return;
         if (!sample.matches(renderEntity, partialTicks)) {
+            if (!sample.ownsNativeOrigin()) return;
             throw new IllegalStateException("Native camera anchor capture no longer matches the "
                     + "orientCamera render entity/partial sample: expected entity="
                     + sample.renderEntity + ", partial=" + sample.partialTicks
@@ -234,7 +235,8 @@ public final class CameraRuntime {
         sample.finalCameraOrigin = new Vec3d(base.x + origin.x / origin.w, base.y + origin.y / origin.w,
                 base.z + origin.z / origin.w);
         CameraEyeProbe.capture(renderEntity, sample.partialTicks, sample.frame, sample.finalCameraOrigin,
-                sample.perspective, sample.ownsNativeOrigin(), sample.cameraSetupApplied);
+                sample.perspective, sample.ownsNativeOrigin(), sample.cameraSetupApplied,
+                sample.previousBase, sample.renderBase, sample.anchorCaptured ? sample.effectiveEyeHeight : Float.NaN);
     }
 
     static final class NativeCameraRenderSample {

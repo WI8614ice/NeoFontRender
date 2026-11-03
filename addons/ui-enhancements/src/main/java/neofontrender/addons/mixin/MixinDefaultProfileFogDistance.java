@@ -14,7 +14,12 @@ public abstract class MixinDefaultProfileFogDistance {
             target = "Lnet/minecraft/client/renderer/GlStateManager;glFogi(II)V", ordinal = 1),
             require = 1, expect = 1, allow = 1)
     private void nfrUi$restoreDistanceParameter(Args args) {
-        if ((int) args.get(0) != GL11.GL_FOG_MODE || (int) args.get(1) != NVFogDistance.GL_EYE_RADIAL_NV)
+        int distanceMode = args.get(1);
+        // Cleanroom 0.6.8 resets absolute planar distance; the compile baseline
+        // resets radial distance. Preserve that choice and correct only its parameter.
+        if ((int) args.get(0) != GL11.GL_FOG_MODE
+                || distanceMode != NVFogDistance.GL_EYE_RADIAL_NV
+                    && distanceMode != NVFogDistance.GL_EYE_PLANE_ABSOLUTE_NV)
             throw new IllegalStateException("Unexpected DEFAULT fog distance reset arguments: " + args.get(0) + ", " + args.get(1));
         args.set(0, NVFogDistance.GL_FOG_DISTANCE_MODE_NV);
     }
