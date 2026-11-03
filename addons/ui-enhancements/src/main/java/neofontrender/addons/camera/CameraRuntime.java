@@ -236,7 +236,14 @@ public final class CameraRuntime {
                 base.z + origin.z / origin.w);
         CameraEyeProbe.capture(renderEntity, sample.partialTicks, sample.frame, sample.finalCameraOrigin,
                 sample.perspective, sample.ownsNativeOrigin(), sample.cameraSetupApplied,
-                sample.previousBase, sample.renderBase, sample.anchorCaptured ? sample.effectiveEyeHeight : Float.NaN);
+                sample.previousBase, sample.renderBase, sample.anchorCaptured ? sample.effectiveEyeHeight : Float.NaN,
+                inverse, base);
+    }
+
+    /** Diagnostic callback fence; no resampling or frame ownership changes. */
+    static synchronized boolean diagnosticSampleCurrent(Entity entity, CameraFrame frame) {
+        return nativeCameraRenderSample != null && nativeCameraRenderSample.renderEntity == entity
+                && nativeCameraRenderSample.frame == frame && lastFrame == frame;
     }
 
     static final class NativeCameraRenderSample {

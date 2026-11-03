@@ -1,6 +1,14 @@
 package neofontrender.addons.camera;
 
 import java.lang.ref.WeakReference;
+import java.nio.FloatBuffer;
+import java.util.ArrayList;
+import java.util.List;
+import javax.vecmath.Matrix4f;
+import javax.vecmath.Vector4f;
+import org.lwjgl.BufferUtils;
+import org.lwjgl.opengl.GL11;
+import net.minecraft.client.renderer.GlStateManager;
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import net.minecraft.client.Minecraft;
@@ -13,7 +21,7 @@ import neofontrender.addons.api.camera.CameraVector;
 import neofontrender.addons.api.flight.FlightRenderDiagnostics;
 import neofontrender.addons.ui.NfrUiEnhancements;
 
-/** Observes the adopted modelview origin without issuing camera or collision queries. */
+/** Samples final render matrices and bounded collision evidence only at the existing diagnostic cadence. */
 final class CameraEyeProbe {
     private static final ArrayBlockingQueue<Observation> PENDING = new ArrayBlockingQueue<>(16);
     private static WeakReference<Entity> actor = new WeakReference<>(null);
@@ -36,7 +44,8 @@ final class CameraEyeProbe {
     /** Called only after this pass has captured its final world-space camera origin. */
     static void capture(Entity entity, float partialTicks, CameraFrame frame,
                         Vec3d finalEye, int view, boolean nativeOrigin, boolean setupApplied,
-                        CameraVector previousBase, CameraVector renderBase, float effectiveEyeHeight) {
+                        CameraVector previousBase, CameraVector renderBase, float effectiveEyeHeight,
+                        Matrix4f inverseModelView, Vec3d modelViewWorldBase) {
         Minecraft mc = Minecraft.getMinecraft();
         if (writerFailed || entity != mc.player || entity.world != mc.world) return;
         int tick = entity.ticksExisted;
@@ -83,8 +92,84 @@ final class CameraEyeProbe {
                 physical == null ? null : physical.acknowledgedG(), effectiveG, view, nativeOrigin, setupApplied, offset,
                 entity.collidedHorizontally, entity.collidedVertically, finalEye,
                 entity.getEntityBoundingBox(), new Vec3d(entity.posX, entity.posY, entity.posZ),
-                previousBase, renderBase, effectiveEyeHeight, frame, dropped);
+                previousBase, renderBase, effectiveEyeHeight, frame,
+                geometry(entity, finalEye, frame, inverseModelView, modelViewWorldBase), dropped);
         if (!PENDING.offer(value)) dropped++;
+    }
+
+    private static String geometry(Entity entity, Vec3d eye, CameraFrame frame,
+                                   Matrix4f inverseModelView, Vec3d worldBase) {
+        try {
+            FloatBuffer projectionValues = BufferUtils.createFloatBuffer(16);
+            GlStateManager.getFloat(GL11.GL_PROJECTION_MATRIX, projectionValues);
+            Matrix4f projection = new Matrix4f();
+            StringBuilder values = new StringBuilder();
+            for (int row = 0; row < 4; row++) for (int column = 0; column < 4; column++) {
+                float value = projectionValues.get(column * 4 + row);
+                if (!Float.isFinite(value)) throw new IllegalStateException("Non-finite final camera projection");
+                projection.setElement(row, column, value);
+                if (values.length() > 0) values.append(',');
+                values.append(value);
+            }
+            projection.invert();
+            Matrix4f inverseClip = new Matrix4f();
+            inverseClip.mul(inverseModelView, projection);
+            List<Vec3d> corners = new ArrayList<>(4);
+            double minX = eye.x, minY = eye.y, minZ = eye.z, maxX = eye.x, maxY = eye.y, maxZ = eye.z;
+            for (int i = 0; i < 4; i++) {
+                Vector4f corner = new Vector4f((i & 1) == 0 ? -1 : 1, (i & 2) == 0 ? -1 : 1, -1, 1);
+                inverseClip.transform(corner);
+                if (!Float.isFinite(corner.w) || corner.w == 0) throw new IllegalStateException("Invalid near-plane homogeneous coordinate");
+                Vec3d point = new Vec3d(worldBase.x + corner.x / corner.w,
+                        worldBase.y + corner.y / corner.w, worldBase.z + corner.z / corner.w);
+                if (!Double.isFinite(point.x) || !Double.isFinite(point.y) || !Double.isFinite(point.z))
+                    throw new IllegalStateException("Non-finite world near-plane corner");
+                corners.add(point);
+                minX = Math.min(minX, point.x); minY = Math.min(minY, point.y); minZ = Math.min(minZ, point.z);
+                maxX = Math.max(maxX, point.x); maxY = Math.max(maxY, point.y); maxZ = Math.max(maxZ, point.z);
+            }
+            AxisAlignedBB envelope = new AxisAlignedBB(minX, minY, minZ, maxX, maxY, maxZ);
+            String collision;
+            // This only caps diagnostic query size; it never limits the camera or player.
+            if (maxX - minX > 2 || maxY - minY > 2 || maxZ - minZ > 2) {
+                collision = "NOT_QUERIED_ENVELOPE_SPAN_GT_2";
+            } else {
+                var world = entity.world;
+                int tick = entity.ticksExisted;
+                var expectedPosition = new Vec3d(entity.posX, entity.posY, entity.posZ);
+                var boxes = world.getCollisionBoxes(entity, envelope);
+                if (entity.world != world || Minecraft.getMinecraft().world != world
+                        || entity.ticksExisted != tick || entity.posX != expectedPosition.x
+                        || entity.posY != expectedPosition.y || entity.posZ != expectedPosition.z
+                        || !CameraRuntime.diagnosticSampleCurrent(entity, frame))
+                    return "finalGeometry=STALE_COLLISION_CALLBACK";
+                int eyeInside = 0, cornersInside = 0;
+                AxisAlignedBB first = null, firstEye = null, firstCorner = null;
+                for (AxisAlignedBB box : boxes) {
+                    if (first == null) first = box;
+                    if (inside(box, eye)) { eyeInside++; if (firstEye == null) firstEye = box; }
+                    for (Vec3d point : corners) if (inside(box, point)) {
+                        cornersInside++;
+                        if (firstCorner == null) firstCorner = box;
+                    }
+                }
+                collision = "envelopeCandidates=" + boxes.size() + ",eyeInside=" + eyeInside
+                        + ",nearCornerInside=" + cornersInside + ",firstEnvelopeCandidate=" + first
+                        + ",firstEyeCollider=" + firstEye + ",firstNearCornerCollider=" + firstCorner;
+            }
+            return "finalEyeMinusFrame=" + eye.subtract(frame.position().x, frame.position().y, frame.position().z)
+                    + " projectionRowMajor=" + values + " nearPlaneWorldCorners=" + corners
+                    + " nearEnvelope=" + envelope + " collisionEvidence=" + collision
+                    + " collisionEvidenceScope=POINTS_AND_ENVELOPE_NOT_COMPLETE_NEAR_PLANE_SAT";
+        } catch (RuntimeException failure) {
+            NfrUiEnhancements.LOGGER.error("CAMERA_EYE_PROBE final projection/collision observation failed", failure);
+            return "finalGeometry=FAILED:" + failure.getClass().getName();
+        }
+    }
+
+    private static boolean inside(AxisAlignedBB box, Vec3d point) {
+        return point.x > box.minX && point.x < box.maxX && point.y > box.minY && point.y < box.maxY
+                && point.z > box.minZ && point.z < box.maxZ;
     }
 
     private static String clip(String value) {
@@ -113,7 +198,7 @@ final class CameraEyeProbe {
             Boolean effectiveG, int perspective, boolean nativeOrigin, boolean setupApplied,
             int edgeOffset, boolean collidedHorizontally, boolean collidedVertically, Vec3d finalEye,
             AxisAlignedBB installedBodyBounds, Vec3d installedPosition, CameraVector previousBase,
-            CameraVector renderBase, float effectiveEyeHeight, CameraFrame frame, long droppedBefore) {
+            CameraVector renderBase, float effectiveEyeHeight, CameraFrame frame, String finalGeometry, long droppedBefore) {
         @Override public String toString() {
             return "source=ADOPTED_MODELVIEW_ORIGIN clientTick=" + clientTick + " partialTick=" + partialTick
                     + " frame=" + frameId + " physicalScope=" + physicalScope + " physicalRevision=" + physicalRevision
@@ -129,7 +214,7 @@ final class CameraEyeProbe {
                                     renderBase.y - installedPosition.y, renderBase.z - installedPosition.z))
                     + " framePosition=" + vector(frame.position()) + " frameTarget=" + vector(frame.targetPosition())
                     + " bodyQ=" + quaternion(frame.bodyAttitude()) + " viewQ=" + quaternion(frame.viewAttitude())
-                    + " nearPlane=NOT_OBSERVED clipResult=NOT_OBSERVED targetBlock=NOT_OBSERVED"
+                    + " " + finalGeometry + " clipResult=NOT_APPLIED_BY_DIAGNOSTIC targetBlock=NOT_OBSERVED"
                     + " bodyBoundsSource=NATIVE_BOUNDS_TRANSLATED_TO_RENDER_BASE droppedBefore=" + droppedBefore;
         }
         private static String vector(CameraVector value) {
