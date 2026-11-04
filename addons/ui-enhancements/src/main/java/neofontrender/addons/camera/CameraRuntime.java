@@ -4,12 +4,15 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.entity.EntityPlayerSP;
 import net.minecraft.client.renderer.ActiveRenderInfo;
 import net.minecraft.client.renderer.GlStateManager;
+import net.minecraft.client.renderer.RenderGlobal;
 import java.nio.FloatBuffer;
+import java.lang.ref.WeakReference;
 import javax.vecmath.Matrix4f;
 import javax.vecmath.Vector4f;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.GL11;
 import net.minecraft.entity.Entity;
+import net.minecraft.world.World;
 import net.minecraft.util.math.AxisAlignedBB;
 import net.minecraft.util.ResourceLocation;
 import net.minecraft.util.math.RayTraceResult;
@@ -55,6 +58,10 @@ public final class CameraRuntime {
     private static boolean sampleValid;
     private static boolean sampledEyeAnchorActive;
     private static NativeCameraRenderSample nativeCameraRenderSample;
+    private static WeakReference<Entity> terrainViewEntity = new WeakReference<>(null);
+    private static WeakReference<World> terrainViewWorld = new WeakReference<>(null);
+    private static WeakReference<RenderGlobal> terrainViewRenderer = new WeakReference<>(null);
+    private static CameraFrame terrainViewFrame;
     private static CameraFrame lastFrame = new CameraFrame(0L, 0.0F,
             CameraAttitude.IDENTITY, CameraAttitude.IDENTITY,
             new CameraVector(0.0D, 0.0D, 0.0D), new CameraVector(0.0D, 0.0D, 0.0D), true);
@@ -152,6 +159,7 @@ public final class CameraRuntime {
                                                             boolean nativeOrigin, int perspective) {
         nativeCameraRenderSample = new NativeCameraRenderSample(renderEntity, clampPartial(partialTicks),
                 frame, overrideActive, nativeOrigin, perspective);
+        if (!nativeOrigin) terrainViewFrame = null;
     }
 
     /**
@@ -234,10 +242,40 @@ public final class CameraRuntime {
                 .subtract(ActiveRenderInfo.getCameraPosition());
         sample.finalCameraOrigin = new Vec3d(base.x + origin.x / origin.w, base.y + origin.y / origin.w,
                 base.z + origin.z / origin.w);
+        invalidateTerrainForOwnedView(sample);
         CameraEyeProbe.capture(renderEntity, sample.partialTicks, sample.frame, sample.finalCameraOrigin,
                 sample.perspective, sample.ownsNativeOrigin(), sample.cameraSetupApplied,
                 sample.previousBase, sample.renderBase, sample.anchorCaptured ? sample.effectiveEyeHeight : Float.NaN,
                 inverse, base);
+    }
+
+    /** Native terrain invalidation watches entity Euler angles, which an owned quaternion need not change. */
+    private static void invalidateTerrainForOwnedView(NativeCameraRenderSample sample) {
+        if (!sample.ownsNativeOrigin() || !sample.cameraSetupApplied || MC.renderGlobal == null) {
+            terrainViewFrame = null;
+            return;
+        }
+        CameraFrame previous = terrainViewFrame;
+        CameraFrame current = sample.frame;
+        boolean changed = previous == null || terrainViewEntity.get() != sample.renderEntity
+                || terrainViewWorld.get() != sample.renderEntity.world
+                || terrainViewRenderer.get() != MC.renderGlobal
+                || !sameTerrainView(previous, current);
+        if (!changed) return;
+        terrainViewEntity = new WeakReference<>(sample.renderEntity);
+        terrainViewWorld = new WeakReference<>(sample.renderEntity.world);
+        terrainViewRenderer = new WeakReference<>(MC.renderGlobal);
+        terrainViewFrame = current;
+        // Reuse vanilla's notification before setupTerrain; renderer integrations already consume it.
+        MC.renderGlobal.setDisplayListEntitiesDirty();
+    }
+
+    private static boolean sameTerrainView(CameraFrame previous, CameraFrame current) {
+        CameraVector a = previous.position(), b = current.position();
+        if (a.x != b.x || a.y != b.y || a.z != b.z) return false;
+        CameraAttitude q = previous.viewAttitude(), r = current.viewAttitude();
+        return (q.x == r.x && q.y == r.y && q.z == r.z && q.w == r.w)
+                || (q.x == -r.x && q.y == -r.y && q.z == -r.z && q.w == -r.w);
     }
 
     /** Diagnostic callback fence; no resampling or frame ownership changes. */
